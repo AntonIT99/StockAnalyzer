@@ -117,7 +117,8 @@ INDICATOR_SETTINGS = [
     "show_volume",
     "show_volume_ema50",
     "show_atr",
-    "show_earnings"
+    "show_earnings",
+    "show_fundamentals"
 ]
 
 
@@ -163,6 +164,8 @@ class StockApp:
         self.show_volume_ema50 = tk.BooleanVar(value=bool(indicator_settings.get("show_volume_ema50", True)))
         self.show_atr = tk.BooleanVar(value=bool(indicator_settings.get("show_atr", False)))
         self.show_earnings = tk.BooleanVar(value=bool(indicator_settings.get("show_earnings", False)))
+        self.show_fundamentals = tk.BooleanVar(value=bool(indicator_settings.get("show_fundamentals", False)))
+        self._fundamentals_cache: dict[str, dict[str, Any]] = {}
 
         self._build_ui()
         if ticker:
@@ -256,7 +259,7 @@ class StockApp:
         price_style_combobox.pack(side="left", padx=5)
         price_style_combobox.bind("<<ComboboxSelected>>", lambda _event: self.save_settings())
 
-        ttk.Button(top_controls, text="Update", command=self.update_chart).pack(side="left", padx=15)
+        ttk.Button(top_controls, text="Update", command=lambda: self.update_chart(refresh_fundamentals=True)).pack(side="left", padx=15)
 
         ttk.Checkbutton(indicator_controls, text="EMA 9", variable=self.show_ema9, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="EMA 12", variable=self.show_ema12, command=self.save_settings).pack(side="left", padx=8)
@@ -274,6 +277,7 @@ class StockApp:
         ttk.Checkbutton(indicator_controls, text="Vol EMA50", variable=self.show_volume_ema50, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="ATR 14", variable=self.show_atr, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="Earnings", variable=self.show_earnings, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(indicator_controls, text="Fundamentals", variable=self.show_fundamentals, command=self.save_settings).pack(side="left", padx=8)
 
         self.figure = Figure(figsize=(11, 7), dpi=100, constrained_layout=True)
         self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
@@ -669,6 +673,350 @@ class StockApp:
         return f"{value:.0f}"
 
     @staticmethod
+    def fetch_fundamentals(ticker: str) -> dict[str, Any]:
+        ticker_data = yf.Ticker(ticker)
+        raw: dict[str, Any] = {}
+
+        for name, attribute in (
+            ("info", "info"),
+            ("fast_info", "fast_info"),
+            ("income_stmt", "income_stmt"),
+            ("quarterly_income_stmt", "quarterly_income_stmt"),
+            ("balance_sheet", "balance_sheet"),
+            ("quarterly_balance_sheet", "quarterly_balance_sheet"),
+            ("cashflow", "cashflow"),
+            ("quarterly_cashflow", "quarterly_cashflow")
+        ):
+            try:
+                value = getattr(ticker_data, attribute)
+                if name == "fast_info":
+                    try:
+                        value = dict(value)
+                    except Exception:
+                        value = {}
+                raw[name] = value
+            except Exception as exc:
+                print(f"Warning: failed to fetch {name} for {ticker}: {exc}")
+                raw[name] = pd.DataFrame() if "stmt" in name or "sheet" in name or "cashflow" in name else {}
+
+        return raw
+
+    def get_fundamentals(self, ticker: str, refresh: bool = False) -> dict[str, Any]:
+        if refresh or ticker not in self._fundamentals_cache:
+            try:
+                raw = self.fetch_fundamentals(ticker)
+                self._fundamentals_cache[ticker] = self.calculate_fundamental_metrics(raw)
+            except Exception as exc:
+                print(f"Warning: failed to calculate fundamentals for {ticker}: {exc}")
+                self._fundamentals_cache[ticker] = {}
+
+        return self._fundamentals_cache.get(ticker, {})
+
+    @staticmethod
+    def first_available(mapping: dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            value = mapping.get(key)
+            if not StockApp.is_missing_value(value):
+                return value
+        return None
+
+    @staticmethod
+    def is_missing_value(value: Any) -> bool:
+        if value is None:
+            return True
+        try:
+            return bool(pd.isna(value))
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def statement_value(statement: Any, row_names: list[str], column_offset: int = 0) -> float | None:
+        if not isinstance(statement, pd.DataFrame) or statement.empty:
+            return None
+
+        for row_name in row_names:
+            if row_name not in statement.index or len(statement.columns) <= column_offset:
+                continue
+
+            value = statement.loc[row_name].iloc[column_offset]
+            if value is not None and not pd.isna(value):
+                return float(value)
+
+        return None
+
+    @staticmethod
+    def statement_growth(statement: Any, row_names: list[str], compare_offset: int) -> float | None:
+        latest = StockApp.statement_value(statement, row_names, 0)
+        previous = StockApp.statement_value(statement, row_names, compare_offset)
+        if latest is None or previous is None or previous == 0:
+            return None
+
+        return (latest - previous) / abs(previous)
+
+    @staticmethod
+    def statement_row(statement: Any, row_name: str) -> pd.Series | None:
+        if not isinstance(statement, pd.DataFrame) or statement.empty or row_name not in statement.index:
+            return None
+
+        row = statement.loc[row_name]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+        row = row.dropna()
+        if row.empty:
+            return None
+
+        try:
+            row.index = pd.to_datetime(row.index)
+            row = row.sort_index(ascending=False)
+        except Exception:
+            pass
+
+        return row
+
+    @staticmethod
+    def calculate_eps_growth_yoy(quarterly_income: Any) -> float | None:
+        diluted_eps = StockApp.statement_row(quarterly_income, "Diluted EPS")
+        basic_eps = StockApp.statement_row(quarterly_income, "Basic EPS")
+        net_income = StockApp.statement_row(quarterly_income, "Net Income")
+
+        print("EPS Growth YoY debug:")
+        print("  desired method: Diluted EPS TTM vs Diluted EPS TTM one year ago")
+        print("  source preference: quarterly_income_stmt, row='Diluted EPS'")
+        print("  annual EPS used: no")
+        print("  basic EPS used: no")
+        print("  net income used: no")
+
+        if basic_eps is not None:
+            print(f"  Basic EPS available but ignored: {StockApp.format_debug_series(basic_eps)}")
+        if net_income is not None:
+            print(f"  Net Income available but ignored: {StockApp.format_debug_series(net_income)}")
+
+        if diluted_eps is None:
+            print("  Diluted EPS unavailable in quarterly_income_stmt. EPS Growth YoY = N/A")
+            return None
+
+        print(f"  Diluted EPS raw quarterly values: {StockApp.format_debug_series(diluted_eps)}")
+        if len(diluted_eps) < 8:
+            print(f"  Need at least 8 quarterly diluted EPS values for TTM YoY, found {len(diluted_eps)}. EPS Growth YoY = N/A")
+            return None
+
+        current_periods = diluted_eps.iloc[:4]
+        previous_periods = diluted_eps.iloc[4:8]
+        current_eps = float(current_periods.sum())
+        previous_eps = float(previous_periods.sum())
+        current_dates = [StockApp.format_statement_date(date) for date in current_periods.index]
+        previous_dates = [StockApp.format_statement_date(date) for date in previous_periods.index]
+
+        print(f"  current_eps: {current_eps}")
+        print(f"  previous_eps: {previous_eps}")
+        print(f"  current TTM dates: {current_dates}")
+        print(f"  previous TTM dates: {previous_dates}")
+        print("  source statement: quarterly_income_stmt")
+        print("  source row: Diluted EPS")
+
+        if previous_eps == 0:
+            print("  previous_eps is zero. EPS Growth YoY = N/A")
+            return None
+
+        growth = (current_eps - previous_eps) / abs(previous_eps)
+        print(f"  growth_percent: {growth * 100:.2f}%")
+        return growth
+
+    @staticmethod
+    def format_statement_date(value: Any) -> str:
+        try:
+            return pd.Timestamp(value).strftime("%Y-%m-%d")
+        except Exception:
+            return str(value)
+
+    @staticmethod
+    def format_debug_series(series: pd.Series) -> str:
+        values = []
+        for date, value in series.items():
+            try:
+                formatted_value = f"{float(value):.4g}"
+            except Exception:
+                formatted_value = str(value)
+            values.append(f"{StockApp.format_statement_date(date)}={formatted_value}")
+        return ", ".join(values)
+
+    @staticmethod
+    def calculate_free_cash_flow(cashflow: Any, column_offset: int = 0) -> float | None:
+        operating_cash_flow = StockApp.statement_value(
+            cashflow,
+            ["Operating Cash Flow", "Total Cash From Operating Activities"],
+            column_offset
+        )
+        capital_expenditure = StockApp.statement_value(
+            cashflow,
+            ["Capital Expenditure", "Capital Expenditures", "CapitalExpenditures"],
+            column_offset
+        )
+        if operating_cash_flow is None or capital_expenditure is None:
+            return None
+
+        if capital_expenditure < 0:
+            return operating_cash_flow + capital_expenditure
+
+        return operating_cash_flow - capital_expenditure
+
+    @staticmethod
+    def calculate_fcf_trend(cashflow: Any) -> str:
+        latest = StockApp.calculate_free_cash_flow(cashflow, 0)
+        previous = StockApp.calculate_free_cash_flow(cashflow, 1)
+        if latest is None or previous is None or previous == 0:
+            return "Neutral"
+
+        relative_gap = abs(latest - previous) / abs(previous)
+        if relative_gap < 0.05:
+            return "Neutral"
+
+        return "Rising" if latest > previous else "Falling"
+
+    @staticmethod
+    def calculate_fundamental_metrics(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+        fast_info = raw.get("fast_info") if isinstance(raw.get("fast_info"), dict) else {}
+        income = raw.get("income_stmt")
+        quarterly_income = raw.get("quarterly_income_stmt")
+        balance_sheet = raw.get("balance_sheet")
+        quarterly_balance_sheet = raw.get("quarterly_balance_sheet")
+        cashflow = raw.get("cashflow")
+        quarterly_cashflow = raw.get("quarterly_cashflow")
+
+        total_debt = StockApp.first_available(info, "totalDebt")
+        cash = StockApp.first_available(info, "totalCash")
+        total_equity = StockApp.statement_value(balance_sheet, ["Stockholders Equity", "Total Stockholder Equity"])
+        if total_debt is None:
+            total_debt = StockApp.statement_value(balance_sheet, ["Total Debt", "Net Debt"])
+        if cash is None:
+            cash = StockApp.statement_value(balance_sheet, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"])
+        if total_debt is None:
+            total_debt = StockApp.statement_value(quarterly_balance_sheet, ["Total Debt", "Net Debt"])
+        if cash is None:
+            cash = StockApp.statement_value(quarterly_balance_sheet, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"])
+        if total_equity is None:
+            total_equity = StockApp.statement_value(quarterly_balance_sheet, ["Stockholders Equity", "Total Stockholder Equity"])
+
+        net_debt = None
+        if total_debt is not None and cash is not None:
+            net_debt = float(total_debt) - float(cash)
+
+        debt_to_equity = None
+        if total_debt is not None and total_equity not in (None, 0):
+            debt_to_equity = float(total_debt) / float(total_equity)
+        else:
+            raw_debt_to_equity = StockApp.first_available(info, "debtToEquity")
+            if raw_debt_to_equity is not None:
+                debt_to_equity = float(raw_debt_to_equity) / 100 if raw_debt_to_equity > 10 else float(raw_debt_to_equity)
+
+        revenue_growth = StockApp.statement_growth(income, ["Total Revenue"], 1)
+        if revenue_growth is None:
+            revenue_growth = StockApp.statement_growth(quarterly_income, ["Total Revenue"], 4)
+        if revenue_growth is None:
+            revenue_growth = StockApp.first_available(info, "revenueGrowth")
+
+        eps_growth = StockApp.calculate_eps_growth_yoy(quarterly_income)
+
+        free_cash_flow = StockApp.calculate_free_cash_flow(cashflow)
+        if free_cash_flow is None:
+            free_cash_flow = StockApp.calculate_free_cash_flow(quarterly_cashflow)
+        fcf_trend = StockApp.calculate_fcf_trend(cashflow)
+        if fcf_trend == "Neutral":
+            fcf_trend = StockApp.calculate_fcf_trend(quarterly_cashflow)
+
+        operating_income = StockApp.statement_value(income, ["Operating Income", "OperatingIncome"])
+        total_revenue = StockApp.statement_value(income, ["Total Revenue"])
+        operating_margin = None
+        if operating_income is not None and total_revenue not in (None, 0):
+            operating_margin = operating_income / total_revenue
+        else:
+            operating_margin = StockApp.first_available(info, "operatingMargins")
+
+        metrics = {
+            "market_cap": {"label": "Market Cap", "value": StockApp.first_available(info, "marketCap") or fast_info.get("market_cap"), "type": "money", "section": "Valuation"},
+            "enterprise_value": {"label": "Enterprise Value", "value": StockApp.first_available(info, "enterpriseValue"), "type": "money", "section": "Valuation"},
+            "trailing_pe": {"label": "Trailing P/E", "value": StockApp.first_available(info, "trailingPE"), "type": "multiple", "section": "Valuation"},
+            "forward_pe": {"label": "Forward P/E", "value": StockApp.first_available(info, "forwardPE"), "type": "multiple", "section": "Valuation"},
+            "peg_ratio": {"label": "PEG Ratio", "value": StockApp.first_available(info, "pegRatio", "trailingPegRatio"), "type": "multiple", "section": "Valuation"},
+            "price_sales": {"label": "Price/Sales", "value": StockApp.first_available(info, "priceToSalesTrailing12Months"), "type": "multiple", "section": "Valuation"},
+            "price_book": {"label": "Price/Book", "value": StockApp.first_available(info, "priceToBook"), "type": "multiple", "section": "Valuation"},
+            "ev_revenue": {"label": "EV/Revenue", "value": StockApp.first_available(info, "enterpriseToRevenue"), "type": "multiple", "section": "Valuation"},
+            "ev_ebitda": {"label": "EV/EBITDA", "value": StockApp.first_available(info, "enterpriseToEbitda"), "type": "multiple", "section": "Valuation"},
+            "revenue_growth_yoy": {"label": "Revenue Growth YoY", "value": revenue_growth, "type": "percent", "section": "Growth & Cash Flow"},
+            "eps_growth_yoy": {"label": "EPS Growth YoY", "value": eps_growth, "type": "percent", "section": "Growth & Cash Flow"},
+            "free_cash_flow": {"label": "Free Cash Flow", "value": free_cash_flow, "type": "money", "section": "Growth & Cash Flow"},
+            "fcf_trend": {"label": "FCF Trend", "value": fcf_trend, "type": "text", "section": "Growth & Cash Flow"},
+            "operating_margin": {"label": "Operating Margin", "value": operating_margin, "type": "percent", "section": "Growth & Cash Flow"},
+            "profit_margin": {"label": "Profit Margin", "value": StockApp.first_available(info, "profitMargins"), "type": "percent", "section": "Growth & Cash Flow"},
+            "return_on_equity": {"label": "Return on Equity", "value": StockApp.first_available(info, "returnOnEquity"), "type": "percent", "section": "Growth & Cash Flow"},
+            "total_debt": {"label": "Total Debt", "value": total_debt, "type": "money", "section": "Balance Sheet"},
+            "cash": {"label": "Cash", "value": cash, "type": "money", "section": "Balance Sheet"},
+            "net_debt": {"label": "Net Debt", "value": net_debt, "type": "money", "section": "Balance Sheet"},
+            "debt_equity": {"label": "Debt/Equity", "value": debt_to_equity, "type": "multiple", "section": "Balance Sheet"}
+        }
+
+        for metric_name, metric in metrics.items():
+            metric["status"] = StockApp.classify_fundamental_metric(metric_name, metric.get("value"))
+
+        return metrics
+
+    @staticmethod
+    def format_fundamental_value(value: Any, metric_type: str) -> str:
+        if StockApp.is_missing_value(value):
+            return "N/A"
+        if metric_type == "text":
+            return str(value)
+        if metric_type == "money":
+            return StockApp.format_compact_number(float(value))
+        if metric_type == "percent":
+            return f"{float(value) * 100:.1f}%"
+        if metric_type == "multiple":
+            return f"{float(value):.1f}x"
+        return str(value)
+
+    @staticmethod
+    def classify_fundamental_metric(name: str, value: Any) -> str:
+        if StockApp.is_missing_value(value):
+            return "neutral"
+
+        if name in {"trailing_pe", "forward_pe"}:
+            value = float(value)
+            if value < 10:
+                return "good"
+            if value <= 20:
+                return "neutral"
+            if value > 25:
+                return "bad"
+            return "neutral"
+
+        if name == "peg_ratio":
+            value = float(value)
+            if value < 1:
+                return "good"
+            if value <= 2:
+                return "neutral"
+            return "bad"
+
+        if name == "debt_equity":
+            value = float(value)
+            if value < 0.5:
+                return "good"
+            if value <= 1.5:
+                return "neutral"
+            return "bad"
+
+        if name == "fcf_trend":
+            normalized = str(value).lower()
+            if normalized == "rising":
+                return "good"
+            if normalized == "falling":
+                return "bad"
+            return "neutral"
+
+        return "neutral"
+
+    @staticmethod
     def latest_valid_value(series):
         values = series.dropna()
         if values.empty:
@@ -912,7 +1260,13 @@ class StockApp:
             label="_nolegend_"
         )
 
-    def add_signal_summary_box(self, ax: Any, summary: dict[str, Any]) -> None:
+    def add_signal_summary_box(
+        self,
+        ax: Any,
+        summary: dict[str, Any],
+        card_bottom: float = 0.50,
+        card_height: float = 0.46
+    ) -> None:
         ax.set_axis_off()
         current_price = summary.get("current_price")
         current_rvol = summary.get("current_rvol")
@@ -954,9 +1308,7 @@ class StockApp:
         ]
 
         card_left = 0.04
-        card_bottom = 0.50
         card_width = 0.92
-        card_height = 0.46
         card_right = card_left + card_width
         card_top = card_bottom + card_height
 
@@ -1018,6 +1370,150 @@ class StockApp:
                 zorder=7
             )
             row_y -= row_step
+
+    def draw_fundamental_dashboard(self, ax: Any, metrics: dict[str, dict[str, Any]], card_bottom: float = 0.03, card_height: float = 0.58) -> None:
+        ax.set_axis_off()
+
+        card_left = 0.04
+        card_width = 0.92
+        card_right = card_left + card_width
+        card_top = card_bottom + card_height
+
+        card = FancyBboxPatch(
+            (card_left, card_bottom),
+            card_width,
+            card_height,
+            boxstyle="round,pad=0.012",
+            transform=ax.transAxes,
+            facecolor="white",
+            edgecolor="#d1d5db",
+            linewidth=0.9,
+            alpha=0.94,
+            zorder=6
+        )
+        ax.add_patch(card)
+
+        ax.text(
+            card_left + 0.018,
+            card_top - 0.028,
+            "Fundamentals",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8.3,
+            fontweight="bold",
+            color="#111827",
+            zorder=7
+        )
+
+        def status_color(status: str) -> str:
+            if status == "good":
+                return "#16a34a"
+            if status == "bad":
+                return "#dc2626"
+            return "#64748b"
+
+        def status_label(name: str, status: str, value: Any) -> str:
+            if name in {"trailing_pe", "forward_pe"}:
+                if status == "good":
+                    return "cheap"
+                if status == "bad":
+                    return "expensive"
+                return "reasonable"
+            if name == "peg_ratio":
+                if status == "good":
+                    return "attractive"
+                if status == "bad":
+                    return "expensive"
+                return "fair"
+            if name == "debt_equity":
+                if status == "good":
+                    return "low"
+                if status == "bad":
+                    return "high"
+                return "moderate"
+            if name == "fcf_trend" and value not in (None, "N/A"):
+                return str(value).lower()
+            return ""
+
+        sections = ["Valuation", "Growth & Cash Flow", "Balance Sheet"]
+        row_y = card_top - 0.068
+        row_step = 0.023
+        section_gap = 0.014
+
+        if not metrics:
+            ax.text(
+                card_left + 0.018,
+                row_y,
+                "No fundamental data available",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=7.5,
+                color="#64748b",
+                zorder=7
+            )
+            return
+
+        for section in sections:
+            section_metrics = [
+                (name, metric)
+                for name, metric in metrics.items()
+                if metric.get("section") == section
+            ]
+            if not section_metrics:
+                continue
+
+            ax.text(
+                card_left + 0.018,
+                row_y,
+                section,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=7.7,
+                fontweight="bold",
+                color="#111827",
+                zorder=7
+            )
+            row_y -= row_step
+
+            for metric_name, metric in section_metrics:
+                if row_y < card_bottom + 0.014:
+                    return
+
+                formatted_value = self.format_fundamental_value(metric.get("value"), metric.get("type", ""))
+                status = metric.get("status", "neutral") if formatted_value != "N/A" else "neutral"
+                interpretation = status_label(metric_name, status, metric.get("value"))
+                value_text = formatted_value if not interpretation else f"{formatted_value}  {interpretation}"
+                color = status_color(status)
+
+                ax.text(
+                    card_left + 0.018,
+                    row_y,
+                    metric.get("label", metric_name),
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=6.9,
+                    color="#374151",
+                    zorder=7
+                )
+                ax.text(
+                    card_right - 0.018,
+                    row_y,
+                    value_text,
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="top",
+                    fontsize=6.9,
+                    fontweight="bold" if interpretation else "normal",
+                    color=color,
+                    zorder=7
+                )
+                row_y -= row_step
+
+            row_y -= section_gap
 
     def plot_volume_panel(
         self,
@@ -1199,7 +1695,7 @@ class StockApp:
 
         return data
 
-    def update_chart(self):
+    def update_chart(self, refresh_fundamentals: bool = False):
         try:
             ticker = self.get_ticker()
             data, visible_start = self.download_data()
@@ -1223,16 +1719,30 @@ class StockApp:
         )
         total_rows = 1 + extra_panels
 
+        show_fundamentals = self.show_fundamentals.get()
         chart_grid = self.figure.add_gridspec(
             total_rows,
             2,
-            width_ratios=[5.4, 1.2],
+            width_ratios=[5.35, 1.35],
             wspace=0.08,
             hspace=0.28
         )
         price_ax = self.figure.add_subplot(chart_grid[0, 0])
-        summary_ax = self.figure.add_subplot(chart_grid[:, 1])
+        if show_fundamentals:
+            right_grid = chart_grid[:, 1].subgridspec(
+                2,
+                1,
+                height_ratios=[0.36, 0.64],
+                hspace=0.08
+            )
+            summary_ax = self.figure.add_subplot(right_grid[0, 0])
+            fundamentals_ax = self.figure.add_subplot(right_grid[1, 0])
+        else:
+            summary_ax = self.figure.add_subplot(chart_grid[:, 1])
+            fundamentals_ax = None
+
         signal_summary = self.calculate_signal_summary(data)
+        fundamental_metrics = self.get_fundamentals(ticker, refresh=refresh_fundamentals) if show_fundamentals else {}
         spike_times = self.get_spike_times(data) if self.show_volume.get() else pd.Index([])
         earnings_events = pd.DataFrame(columns=["date", "surprise", "label"])
         if self.show_earnings.get():
@@ -1248,7 +1758,9 @@ class StockApp:
             spike_times,
             earnings_events
         )
-        self.add_signal_summary_box(summary_ax, signal_summary)
+        self.add_signal_summary_box(summary_ax, signal_summary, card_bottom=0.03, card_height=0.94)
+        if fundamentals_ax is not None:
+            self.draw_fundamental_dashboard(fundamentals_ax, fundamental_metrics, card_bottom=0.03, card_height=0.94)
 
         row = 1
 
