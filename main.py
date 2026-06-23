@@ -1392,7 +1392,56 @@ class StockApp:
         return "Above" if price >= level else "Below"
 
     @staticmethod
-    def calculate_signal_summary(data: pd.DataFrame) -> dict[str, Any]:
+    @staticmethod
+    def percentage_distance(value: float | None, reference: float | None) -> float | None:
+        if value is None or reference is None or pd.isna(value) or pd.isna(reference) or reference == 0:
+            return None
+        return (value - reference) / reference
+
+    @staticmethod
+    def format_summary_percent(value: float | None) -> str:
+        if value is None or pd.isna(value):
+            return "N/A"
+        return f"{value * 100:+.1f}%"
+
+    @staticmethod
+    def calculate_52w_levels(data: pd.DataFrame) -> tuple[float | None, float | None]:
+        if data.empty or "Close" not in data:
+            return None, None
+
+        end = data.index[-1]
+        try:
+            start = end - pd.DateOffset(years=1)
+            window = data.loc[data.index >= start]
+        except Exception:
+            window = data.tail(252)
+
+        if len(window) < 50:
+            return None, None
+
+        high_source = window["High"] if "High" in window else window["Close"]
+        low_source = window["Low"] if "Low" in window else window["Close"]
+        return high_source.max(), low_source.min()
+
+    @staticmethod
+    def calculate_cross(data: pd.DataFrame) -> str:
+        if "SMA50" not in data or "SMA200" not in data:
+            return "None"
+
+        cross_data = data[["SMA50", "SMA200"]].dropna()
+        if len(cross_data) < 2:
+            return "None"
+
+        previous = cross_data.iloc[-2]
+        current = cross_data.iloc[-1]
+        if previous["SMA50"] <= previous["SMA200"] and current["SMA50"] > current["SMA200"]:
+            return "Golden Cross"
+        if previous["SMA50"] >= previous["SMA200"] and current["SMA50"] < current["SMA200"]:
+            return "Death Cross"
+        return "None"
+
+    @staticmethod
+    def calculate_signal_summary(data: pd.DataFrame, fundamentals: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
         current_price = StockApp.latest_valid_value(data["Close"])
         current_rvol = StockApp.latest_valid_value(data.get("RVOL", pd.Series(dtype=float)))
         current_atr = StockApp.latest_valid_value(data.get("ATR14", pd.Series(dtype=float)))
@@ -1400,6 +1449,7 @@ class StockApp:
         sma200 = StockApp.latest_valid_value(data.get("SMA200", pd.Series(dtype=float)))
         ema20 = StockApp.latest_valid_value(data.get("EMA20", pd.Series(dtype=float)))
         volume_trend = StockApp.calculate_volume_trend(data)
+        high_52w, low_52w = StockApp.calculate_52w_levels(data)
 
         price_conditions = []
         for level in (sma50, sma200, ema20):
@@ -1418,14 +1468,38 @@ class StockApp:
         else:
             overall_trend = "Neutral"
 
+        trend_score = 0
+        if current_price is not None and ema20 is not None and not pd.isna(ema20) and current_price > ema20:
+            trend_score += 1
+        if current_price is not None and sma50 is not None and not pd.isna(sma50) and current_price > sma50:
+            trend_score += 1
+        if current_price is not None and sma200 is not None and not pd.isna(sma200) and current_price > sma200:
+            trend_score += 1
+        if sma50 is not None and sma200 is not None and not pd.isna(sma50) and not pd.isna(sma200) and sma50 > sma200:
+            trend_score += 1
+        if current_rvol is not None and not pd.isna(current_rvol) and current_rvol > 1:
+            trend_score += 1
+
+        fundamentals = fundamentals or {}
+        valuation = fundamentals.get("valuation_view", {}).get("value", "Unknown")
+        business_health = fundamentals.get("business_health", {}).get("value", "Unknown")
+
         return {
             "current_price": current_price,
             "price_vs_sma50": StockApp.compare_price_to_level(current_price, sma50),
             "price_vs_sma200": StockApp.compare_price_to_level(current_price, sma200),
             "price_vs_ema20": StockApp.compare_price_to_level(current_price, ema20),
+            "trend_score": trend_score,
+            "cross": StockApp.calculate_cross(data),
+            "distance_sma50": StockApp.percentage_distance(current_price, sma50),
+            "distance_sma200": StockApp.percentage_distance(current_price, sma200),
+            "distance_52w_high": StockApp.percentage_distance(current_price, high_52w),
+            "distance_52w_low": StockApp.percentage_distance(current_price, low_52w),
             "current_rvol": current_rvol,
             "atr14": current_atr,
             "volume_trend": volume_trend,
+            "valuation": valuation,
+            "business_health": business_health,
             "overall_trend": overall_trend
         }
 
@@ -1611,13 +1685,28 @@ class StockApp:
 
         def status_color(value: str) -> str:
             normalized = str(value).lower()
-            if normalized in {"above", "rising", "bullish"}:
+            if normalized in {"above", "rising", "bullish", "golden cross", "cheap", "strong", "stable"}:
                 return "#16a34a"
-            if normalized in {"below", "falling", "bearish"}:
+            if normalized in {"below", "falling", "bearish", "death cross", "expensive", "weak"}:
                 return "#dc2626"
-            if normalized in {"neutral", "n/a"}:
+            if normalized in {"neutral", "n/a", "none", "fair", "unknown"}:
                 return "#64748b"
             return "#0ea5e9"
+
+        def trend_score_color(value: int) -> str:
+            if value >= 4:
+                return "#16a34a"
+            if value <= 1:
+                return "#dc2626"
+            return "#64748b"
+
+        def distance_color(value: float | None, positive_is_good: bool = True) -> str:
+            if value is None or pd.isna(value):
+                return "#64748b"
+            if abs(value) < 0.005:
+                return "#64748b"
+            is_good = value > 0 if positive_is_good else value < 0
+            return "#16a34a" if is_good else "#dc2626"
 
         def rvol_color(value: float | None) -> str:
             if value is None or pd.isna(value):
@@ -1628,15 +1717,21 @@ class StockApp:
                 return "#16a34a"
             return "#0ea5e9"
 
+        trend_score = int(summary.get("trend_score", 0))
         rows = [
             ("Price", price_text, "#111827"),
-            ("vs SMA 50", summary.get("price_vs_sma50", "n/a"), status_color(summary.get("price_vs_sma50", "n/a"))),
-            ("vs SMA 200", summary.get("price_vs_sma200", "n/a"), status_color(summary.get("price_vs_sma200", "n/a"))),
-            ("vs EMA 20", summary.get("price_vs_ema20", "n/a"), status_color(summary.get("price_vs_ema20", "n/a"))),
+            ("Trend Score", f"{trend_score}/5", trend_score_color(trend_score)),
+            ("Cross", summary.get("cross", "None"), status_color(summary.get("cross", "None"))),
+            ("SMA50 Dist", self.format_summary_percent(summary.get("distance_sma50")), distance_color(summary.get("distance_sma50"))),
+            ("SMA200 Dist", self.format_summary_percent(summary.get("distance_sma200")), distance_color(summary.get("distance_sma200"))),
+            ("52W High Dist", self.format_summary_percent(summary.get("distance_52w_high")), distance_color(summary.get("distance_52w_high"), positive_is_good=False)),
+            ("52W Low Dist", self.format_summary_percent(summary.get("distance_52w_low")), distance_color(summary.get("distance_52w_low"))),
             ("", "", "#111827"),
             ("Volume Trend", summary.get("volume_trend", "Neutral"), status_color(summary.get("volume_trend", "Neutral"))),
             ("RVOL", rvol_text, rvol_color(current_rvol)),
             ("ATR 14", atr_text, "#111827"),
+            ("Valuation", summary.get("valuation", "Unknown"), status_color(summary.get("valuation", "Unknown"))),
+            ("Business", summary.get("business_health", "Unknown"), status_color(summary.get("business_health", "Unknown"))),
             ("", "", "#111827"),
             ("Trend", summary.get("overall_trend", "Neutral").upper(), status_color(summary.get("overall_trend", "Neutral")))
         ]
@@ -1673,11 +1768,12 @@ class StockApp:
             zorder=7
         )
 
-        row_y = card_top - 0.09
-        row_step = 0.045
+        row_y = card_top - 0.092
+        row_step = 0.052 if card_height > 0.80 else 0.041
+        font_size = 7.2 if card_height > 0.80 else 6.2
         for label, value, color in rows:
             if not label:
-                row_y -= row_step * 0.55
+                row_y -= row_step * 0.35
                 continue
 
             ax.text(
@@ -1687,7 +1783,7 @@ class StockApp:
                 transform=ax.transAxes,
                 ha="left",
                 va="top",
-                fontsize=8,
+                fontsize=font_size,
                 color="#111827",
                 zorder=7
             )
@@ -1698,7 +1794,7 @@ class StockApp:
                 transform=ax.transAxes,
                 ha="right",
                 va="top",
-                fontsize=8,
+                fontsize=font_size,
                 fontweight="bold" if label in {"Volume Trend", "Trend"} or label.startswith("vs ") else "normal",
                 color=color,
                 zorder=7
@@ -1766,14 +1862,14 @@ class StockApp:
                 if status == "bad":
                     return "high"
                 return "moderate"
-            if name == "fcf_trend" and value not in (None, "N/A"):
-                return str(value).lower()
             return ""
 
         sections = ["Valuation", "Growth", "Cash Flow", "Quality", "Balance Sheet", "Shareholder View"]
-        row_y = card_top - 0.055
+        row_y = card_top - 0.075
         row_step = 0.019
-        section_gap = 0.010
+        title_rule_gap = 0.017
+        after_rule_gap = 0.008
+        section_gap = 0.012
 
         if not metrics:
             ax.text(
@@ -1812,13 +1908,13 @@ class StockApp:
             )
             ax.plot(
                 [card_left + 0.018, card_right - 0.018],
-                [row_y - 0.010, row_y - 0.010],
+                [row_y - title_rule_gap, row_y - title_rule_gap],
                 transform=ax.transAxes,
                 color="#e5e7eb",
                 linewidth=0.6,
-                zorder=7
+                zorder=6
             )
-            row_y -= row_step * 1.05
+            row_y -= title_rule_gap + after_rule_gap
 
             for metric_name, metric in section_metrics:
                 if row_y < card_bottom + 0.014:
@@ -2086,11 +2182,11 @@ class StockApp:
             summary_ax = self.figure.add_subplot(chart_grid[:, 1])
             fundamentals_ax = None
 
-        signal_summary = self.calculate_signal_summary(data)
         debug_fundamentals = self.show_debug_fundamentals.get()
         fundamental_metrics = self.get_fundamentals(ticker, refresh=refresh_fundamentals, debug=debug_fundamentals) if show_fundamentals else {}
         if show_fundamentals and debug_fundamentals:
             self.print_fundamentals_debug(fundamental_metrics)
+        signal_summary = self.calculate_signal_summary(data, fundamental_metrics)
         spike_times = self.get_spike_times(data) if self.show_volume.get() else pd.Index([])
         earnings_events = pd.DataFrame(columns=["date", "surprise", "label"])
         if self.show_earnings.get():
