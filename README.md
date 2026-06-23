@@ -75,6 +75,12 @@ Cache entries expire based on interval:
 1wk and larger: 1 day
 ```
 
+## Saved Settings
+
+The last used ticker, period, interval, and indicator selections are saved in `.stock_settings.json` and restored when the app starts again.
+
+Passing `--ticker` on startup overrides the saved ticker for that launch.
+
 Examples of ticker formats supported by Yahoo Finance:
 
 ```text

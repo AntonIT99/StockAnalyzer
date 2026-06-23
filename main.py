@@ -14,6 +14,7 @@ from matplotlib.figure import Figure
 
 MAX_MOVING_AVERAGE_WINDOW = 200
 CACHE_DIR = Path(__file__).with_name(".stock_cache")
+SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
 PERIOD_OPTIONS = ["1h", "1d", "5d", "15d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", "max"]
 INTERVAL_OPTIONS = ["1m", "2m", "1h", "1d", "5d", "1wk", "1mo", "3mo", "6mo", "1y"]
 PERIOD_DURATIONS = {
@@ -84,34 +85,99 @@ CACHE_TTLS = {
     "6mo": pd.Timedelta(days=1),
     "1y": pd.Timedelta(days=1)
 }
+INDICATOR_SETTINGS = [
+    "show_ema9",
+    "show_ema12",
+    "show_ema20",
+    "show_ema50",
+    "show_ema200",
+    "show_sma20",
+    "show_sma50",
+    "show_sma100",
+    "show_sma200",
+    "show_bollinger",
+    "show_rsi",
+    "show_macd"
+]
 
 
 class StockApp:
     def __init__(self, root, initial_ticker=""):
+        settings = self.load_settings()
+
         self.root = root
         self.root.title("Stock Technical Chart")
         self.root.geometry("1600x900")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        self.ticker_var = tk.StringVar(value=initial_ticker)
-        self.period_var = tk.StringVar(value="6mo")
-        self.interval_var = tk.StringVar(value="1d")
+        ticker = initial_ticker or settings.get("ticker", "")
+        period = settings.get("period", "6mo")
+        if period not in PERIOD_OPTIONS:
+            period = "6mo"
 
-        self.show_ema9 = tk.BooleanVar(value=False)
-        self.show_ema12 = tk.BooleanVar(value=False)
-        self.show_ema20 = tk.BooleanVar(value=False)
-        self.show_ema50 = tk.BooleanVar(value=False)
-        self.show_ema200 = tk.BooleanVar(value=False)
-        self.show_sma20 = tk.BooleanVar(value=False)
-        self.show_sma50 = tk.BooleanVar(value=False)
-        self.show_sma100 = tk.BooleanVar(value=False)
-        self.show_sma200 = tk.BooleanVar(value=False)
-        self.show_bollinger = tk.BooleanVar(value=False)
-        self.show_rsi = tk.BooleanVar(value=False)
-        self.show_macd = tk.BooleanVar(value=False)
+        interval = settings.get("interval", "1d")
+        if interval not in self.get_allowed_intervals(period):
+            interval = "1d" if "1d" in self.get_allowed_intervals(period) else self.get_allowed_intervals(period)[-1]
+
+        self.ticker_var = tk.StringVar(value=ticker)
+        self.period_var = tk.StringVar(value=period)
+        self.interval_var = tk.StringVar(value=interval)
+
+        indicator_settings = settings.get("indicators", {})
+        self.show_ema9 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema9", False)))
+        self.show_ema12 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema12", False)))
+        self.show_ema20 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema20", False)))
+        self.show_ema50 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema50", False)))
+        self.show_ema200 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema200", False)))
+        self.show_sma20 = tk.BooleanVar(value=bool(indicator_settings.get("show_sma20", False)))
+        self.show_sma50 = tk.BooleanVar(value=bool(indicator_settings.get("show_sma50", False)))
+        self.show_sma100 = tk.BooleanVar(value=bool(indicator_settings.get("show_sma100", False)))
+        self.show_sma200 = tk.BooleanVar(value=bool(indicator_settings.get("show_sma200", False)))
+        self.show_bollinger = tk.BooleanVar(value=bool(indicator_settings.get("show_bollinger", False)))
+        self.show_rsi = tk.BooleanVar(value=bool(indicator_settings.get("show_rsi", False)))
+        self.show_macd = tk.BooleanVar(value=bool(indicator_settings.get("show_macd", False)))
 
         self._build_ui()
-        if initial_ticker:
+        if ticker:
             self.update_chart()
+
+    @staticmethod
+    def load_settings():
+        if not SETTINGS_PATH.exists():
+            return {}
+
+        try:
+            with SETTINGS_PATH.open("r", encoding="utf-8") as settings_file:
+                settings = json.load(settings_file)
+        except Exception:
+            return {}
+
+        if not isinstance(settings, dict):
+            return {}
+
+        return settings
+
+    def save_settings(self):
+        settings = {
+            "ticker": self.ticker_var.get().strip().upper(),
+            "period": self.period_var.get(),
+            "interval": self.interval_var.get(),
+            "indicators": {
+                indicator: getattr(self, indicator).get()
+                for indicator in INDICATOR_SETTINGS
+            }
+        }
+
+        try:
+            with SETTINGS_PATH.open("w", encoding="utf-8") as settings_file:
+                json.dump(settings, settings_file, indent=2)
+                settings_file.write("\n")
+        except Exception:
+            pass
+
+    def on_close(self):
+        self.save_settings()
+        self.root.destroy()
 
     def _build_ui(self):
         controls = ttk.Frame(self.root)
@@ -121,6 +187,7 @@ class StockApp:
         ticker_entry = ttk.Entry(controls, textvariable=self.ticker_var, width=10)
         ticker_entry.pack(side="left", padx=5)
         ticker_entry.bind("<Return>", lambda _event: self.update_chart())
+        ticker_entry.bind("<FocusOut>", lambda _event: self.save_settings())
 
         ttk.Label(controls, text="Period:").pack(side="left")
         period_combobox = ttk.Combobox(
@@ -131,7 +198,7 @@ class StockApp:
             state="readonly"
         )
         period_combobox.pack(side="left", padx=5)
-        period_combobox.bind("<<ComboboxSelected>>", lambda _event: self.update_interval_options())
+        period_combobox.bind("<<ComboboxSelected>>", lambda _event: self.update_interval_options(persist=True))
 
         ttk.Label(controls, text="Interval:").pack(side="left", padx=(15, 0))
         self.interval_combobox = ttk.Combobox(
@@ -142,19 +209,20 @@ class StockApp:
         )
         self.interval_combobox.pack(side="left", padx=5)
         self.update_interval_options()
+        self.interval_combobox.bind("<<ComboboxSelected>>", lambda _event: self.save_settings())
 
-        ttk.Checkbutton(controls, text="EMA 9", variable=self.show_ema9).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="EMA 12", variable=self.show_ema12).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="EMA 20", variable=self.show_ema20).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="EMA 50", variable=self.show_ema50).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="EMA 200", variable=self.show_ema200).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="SMA 20", variable=self.show_sma20).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="SMA 50", variable=self.show_sma50).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="SMA 100", variable=self.show_sma100).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="SMA 200", variable=self.show_sma200).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="Bollinger", variable=self.show_bollinger).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="RSI", variable=self.show_rsi).pack(side="left", padx=8)
-        ttk.Checkbutton(controls, text="MACD", variable=self.show_macd).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="EMA 9", variable=self.show_ema9, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="EMA 12", variable=self.show_ema12, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="EMA 20", variable=self.show_ema20, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="EMA 50", variable=self.show_ema50, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="EMA 200", variable=self.show_ema200, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="SMA 20", variable=self.show_sma20, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="SMA 50", variable=self.show_sma50, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="SMA 100", variable=self.show_sma100, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="SMA 200", variable=self.show_sma200, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="Bollinger", variable=self.show_bollinger, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="RSI", variable=self.show_rsi, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(controls, text="MACD", variable=self.show_macd, command=self.save_settings).pack(side="left", padx=8)
 
         ttk.Button(controls, text="Update", command=self.update_chart).pack(side="left", padx=15)
 
@@ -162,12 +230,15 @@ class StockApp:
         self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    def update_interval_options(self):
+    def update_interval_options(self, persist=False):
         allowed_intervals = self.get_allowed_intervals(self.period_var.get())
         self.interval_combobox["values"] = allowed_intervals
 
         if self.interval_var.get() not in allowed_intervals:
             self.interval_var.set(allowed_intervals[-1])
+
+        if persist:
+            self.save_settings()
 
     @staticmethod
     def get_allowed_intervals(period):
@@ -517,6 +588,7 @@ class StockApp:
 
         self.figure.tight_layout()
         self.canvas.draw()
+        self.save_settings()
 
 
 def parse_args():

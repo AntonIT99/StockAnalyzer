@@ -1,5 +1,6 @@
 ### Python template
 .stock_cache/
+.stock_settings.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
