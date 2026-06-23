@@ -15,8 +15,9 @@ from matplotlib.figure import Figure
 MAX_MOVING_AVERAGE_WINDOW = 200
 CACHE_DIR = Path(__file__).with_name(".stock_cache")
 SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
+INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h"}
 PERIOD_OPTIONS = ["1h", "1d", "5d", "15d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", "max"]
-INTERVAL_OPTIONS = ["1m", "2m", "1h", "1d", "5d", "1wk", "1mo", "3mo", "6mo", "1y"]
+INTERVAL_OPTIONS = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "5d", "1wk", "1mo", "3mo", "6mo", "1y"]
 PERIOD_DURATIONS = {
     "1h": pd.Timedelta(hours=1),
     "1d": pd.Timedelta(days=1),
@@ -36,6 +37,9 @@ PERIOD_DURATIONS = {
 INTERVAL_DURATIONS = {
     "1m": pd.Timedelta(minutes=1),
     "2m": pd.Timedelta(minutes=2),
+    "5m": pd.Timedelta(minutes=5),
+    "15m": pd.Timedelta(minutes=15),
+    "30m": pd.Timedelta(minutes=30),
     "1h": pd.Timedelta(hours=1),
     "1d": pd.Timedelta(days=1),
     "5d": pd.Timedelta(days=5),
@@ -48,6 +52,9 @@ INTERVAL_DURATIONS = {
 INTERVAL_MAX_LOOKBACKS = {
     "1m": pd.Timedelta(days=8),
     "2m": pd.Timedelta(days=60),
+    "5m": pd.Timedelta(days=60),
+    "15m": pd.Timedelta(days=60),
+    "30m": pd.Timedelta(days=60),
     "1h": pd.Timedelta(days=730),
     "1d": None,
     "5d": None,
@@ -60,6 +67,9 @@ INTERVAL_MAX_LOOKBACKS = {
 DOWNLOAD_INTERVALS = {
     "1m": "1m",
     "2m": "2m",
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
     "1h": "1h",
     "1d": "1d",
     "5d": "5d",
@@ -76,6 +86,9 @@ RESAMPLE_RULES = {
 CACHE_TTLS = {
     "1m": pd.Timedelta(minutes=2),
     "2m": pd.Timedelta(minutes=5),
+    "5m": pd.Timedelta(minutes=10),
+    "15m": pd.Timedelta(minutes=15),
+    "30m": pd.Timedelta(minutes=30),
     "1h": pd.Timedelta(minutes=15),
     "1d": pd.Timedelta(hours=6),
     "5d": pd.Timedelta(hours=12),
@@ -278,8 +291,12 @@ class StockApp:
             download_kwargs["period"] = self.period_var.get()
         else:
             self.validate_period_interval(visible_start, interval)
-            download_kwargs["start"] = self.get_download_start(visible_start, interval)
-            download_kwargs["end"] = pd.Timestamp.now().normalize() + pd.Timedelta(days=1)
+            intraday_period = self.get_intraday_download_period(interval, self.period_var.get())
+            if intraday_period is None:
+                download_kwargs["start"] = self.get_download_start(visible_start, interval)
+                download_kwargs["end"] = pd.Timestamp.now().normalize() + pd.Timedelta(days=1)
+            else:
+                download_kwargs["period"] = intraday_period
 
         cache_key = self.build_cache_key(ticker, self.period_var.get(), interval, download_interval)
         data = self.load_cached_data(cache_key, interval)
@@ -309,7 +326,7 @@ class StockApp:
     @staticmethod
     def build_cache_key(ticker, period, interval, download_interval):
         cache_parts = {
-            "version": 1,
+            "version": 3,
             "ticker": ticker,
             "period": period,
             "interval": interval,
@@ -397,6 +414,25 @@ class StockApp:
         except KeyError as exc:
             raise ValueError(f"Unsupported interval: {interval}") from exc
 
+    @staticmethod
+    def get_intraday_download_period(interval, period):
+        if interval not in INTRADAY_INTERVALS:
+            return None
+
+        if interval == "1m":
+            return "5d"
+
+        if interval == "2m":
+            return "1mo"
+
+        if interval in {"5m", "15m", "30m"}:
+            return "1mo"
+
+        if period in {"1h", "1d", "5d", "15d", "1mo"}:
+            return "1mo"
+
+        return period
+
     def validate_period_interval(self, visible_start, interval):
         if interval not in self.get_allowed_intervals(self.period_var.get()):
             raise ValueError(f"Use an interval less than or equal to the selected period: {self.period_var.get()}.")
@@ -404,11 +440,11 @@ class StockApp:
         max_lookback = INTERVAL_MAX_LOOKBACKS[interval]
         if max_lookback is None:
             if visible_start is not None and visible_start > pd.Timestamp.now().normalize():
-                raise ValueError("Use the 1m, 2m, or 1h interval with the 1h period.")
+                raise ValueError("Use a minute or hourly interval with the 1h period.")
             return
 
         if visible_start is None:
-            raise ValueError("Yahoo Finance intraday data has a limited lookback window. Use a shorter period with 1m/2m/1h intervals.")
+            raise ValueError("Yahoo Finance intraday data has a limited lookback window. Use a shorter period with intraday intervals.")
 
         oldest_allowed_start = pd.Timestamp.now() - max_lookback
         if visible_start < oldest_allowed_start:
@@ -416,7 +452,7 @@ class StockApp:
 
     @staticmethod
     def get_download_start(visible_start, interval):
-        if interval in {"1m", "2m", "1h"}:
+        if interval in INTRADAY_INTERVALS:
             return visible_start
 
         if interval == "1wk":
