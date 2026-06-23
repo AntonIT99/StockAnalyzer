@@ -12,6 +12,12 @@ Run the application:
 py main.py
 ```
 
+To load a ticker on startup:
+
+```powershell
+py main.py --ticker MSFT
+```
+
 Enter a ticker symbol in the `Ticker` field, choose the period and interval, select the indicators you want to display, then click `Update`.
 
 Examples of ticker formats supported by Yahoo Finance:

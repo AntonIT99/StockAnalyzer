@@ -1,3 +1,4 @@
+import argparse
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -7,17 +8,16 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 
-DEFAULT_TICKER = "AAPL"
 MAX_MOVING_AVERAGE_WINDOW = 200
 
 
 class StockApp:
-    def __init__(self, root):
+    def __init__(self, root, initial_ticker=""):
         self.root = root
         self.root.title("Stock Technical Chart")
         self.root.geometry("1600x900")
 
-        self.ticker_var = tk.StringVar(value=DEFAULT_TICKER)
+        self.ticker_var = tk.StringVar(value=initial_ticker)
         self.period_var = tk.StringVar(value="6mo")
         self.interval_var = tk.StringVar(value="1d")
 
@@ -35,7 +35,8 @@ class StockApp:
         self.show_macd = tk.BooleanVar(value=False)
 
         self._build_ui()
-        self.update_chart()
+        if initial_ticker:
+            self.update_chart()
 
     def _build_ui(self):
         controls = ttk.Frame(self.root)
@@ -265,7 +266,18 @@ class StockApp:
         self.canvas.draw()
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Stock technical chart viewer")
+    parser.add_argument(
+        "--ticker",
+        default="",
+        help="Ticker symbol to load on startup, for example AAPL, MSFT, SPY, or BTC-USD"
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    args = parse_args()
     tk_root = tk.Tk()
-    app = StockApp(tk_root)
+    app = StockApp(tk_root, initial_ticker=args.ticker.strip().upper())
     tk_root.mainloop()
