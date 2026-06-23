@@ -20,6 +20,61 @@ py main.py --ticker MSFT
 
 Enter a ticker symbol in the `Ticker` field, choose the period and interval, select the indicators you want to display, then click `Update`.
 
+Available periods:
+
+```text
+1h
+1d
+5d
+15d
+1mo
+3mo
+6mo
+1y
+2y
+3y
+4y
+5y
+10y
+max
+```
+
+Available intervals:
+
+```text
+1m
+2m
+1h
+1d
+5d
+1wk
+1mo
+3mo
+6mo
+1y
+```
+
+The `6mo` and `1y` intervals are calculated by downloading daily data and resampling it into larger bars.
+
+The interval dropdown only shows intervals that are valid for the selected period. Yahoo Finance limits `1m` data to roughly 8 days per request, so `1m` is only shown for short periods.
+
+Yahoo Finance does not provide a historical `1s` interval through `yfinance`, so second-by-second charting is not available in this app.
+
+## Data Cache
+
+Downloaded Yahoo Finance data is cached on disk in `.stock_cache/` so repeated chart updates and app restarts do not always trigger new requests.
+
+Cache entries expire based on interval:
+
+```text
+1m: 2 minutes
+2m: 5 minutes
+1h: 15 minutes
+1d: 6 hours
+5d: 12 hours
+1wk and larger: 1 day
+```
+
 Examples of ticker formats supported by Yahoo Finance:
 
 ```text
