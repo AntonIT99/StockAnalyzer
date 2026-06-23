@@ -20,6 +20,8 @@ py main.py --ticker MSFT
 
 Enter a ticker symbol in the `Ticker` field, choose the period and interval, select the indicators you want to display, then click `Update`.
 
+Use the `Style` selector to switch the price panel between a close-price line and candlesticks.
+
 Available periods:
 
 ```text
@@ -119,7 +121,15 @@ It can also display these separate indicator panels:
 ```text
 RSI 14
 MACD
+Volume
+30-Day Average Volume
+Volume EMA 50
+Relative Volume (RVOL)
+ATR 14
+Earnings markers
 ```
+
+The price panel includes a compact signal summary with current price, price versus key moving averages, RVOL, ATR 14, volume trend, and overall trend. Major volume spikes are marked with subtle vertical dotted lines across price and volume panels.
 
 ## Moving Average Data Window
 
