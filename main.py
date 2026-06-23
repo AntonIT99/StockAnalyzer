@@ -1426,19 +1426,56 @@ class StockApp:
     @staticmethod
     def calculate_cross(data: pd.DataFrame) -> str:
         if "SMA50" not in data or "SMA200" not in data:
-            return "None"
+            return "N/A"
 
         cross_data = data[["SMA50", "SMA200"]].dropna()
-        if len(cross_data) < 2:
-            return "None"
+        if cross_data.empty:
+            return "N/A"
 
-        previous = cross_data.iloc[-2]
         current = cross_data.iloc[-1]
-        if previous["SMA50"] <= previous["SMA200"] and current["SMA50"] > current["SMA200"]:
-            return "Golden Cross"
-        if previous["SMA50"] >= previous["SMA200"] and current["SMA50"] < current["SMA200"]:
-            return "Death Cross"
-        return "None"
+        if current["SMA50"] > current["SMA200"]:
+            state = "Golden State"
+        elif current["SMA50"] < current["SMA200"]:
+            state = "Death State"
+        else:
+            state = "None"
+
+        if len(cross_data) >= 2:
+            previous = cross_data.iloc[-2]
+            if previous["SMA50"] <= previous["SMA200"] and current["SMA50"] > current["SMA200"]:
+                return "Golden Cross"
+            if previous["SMA50"] >= previous["SMA200"] and current["SMA50"] < current["SMA200"]:
+                return "Death Cross"
+
+        return state
+
+    @staticmethod
+    def classify_trend_score(score: int) -> str:
+        if score >= 5:
+            return "Strong Bullish"
+        if score == 4:
+            return "Bullish"
+        if score == 3:
+            return "Neutral"
+        if score >= 1:
+            return "Bearish"
+        return "Strong Bearish"
+
+    @staticmethod
+    def calculate_investment_view(business_health: str, valuation: str, trend: str) -> str:
+        business = str(business_health).lower()
+        value = str(valuation).lower()
+        trend_text = str(trend).lower()
+        trend_bullish = "bullish" in trend_text
+        trend_bearish = "bearish" in trend_text
+
+        if business == "strong" and value == "cheap" and trend_bearish:
+            return "Watchlist"
+        if business == "strong" and value == "cheap" and trend_bullish:
+            return "Attractive"
+        if business == "weak" and trend_bearish:
+            return "Risky"
+        return "Watchlist"
 
     @staticmethod
     def calculate_signal_summary(data: pd.DataFrame, fundamentals: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -1450,23 +1487,6 @@ class StockApp:
         ema20 = StockApp.latest_valid_value(data.get("EMA20", pd.Series(dtype=float)))
         volume_trend = StockApp.calculate_volume_trend(data)
         high_52w, low_52w = StockApp.calculate_52w_levels(data)
-
-        price_conditions = []
-        for level in (sma50, sma200, ema20):
-            if current_price is not None and level is not None and not pd.isna(current_price) and not pd.isna(level):
-                price_conditions.append(current_price >= level)
-
-        available_conditions = price_conditions
-        bullish_count = sum(available_conditions)
-
-        if not available_conditions:
-            overall_trend = "Neutral"
-        elif bullish_count >= 2 and volume_trend != "Falling":
-            overall_trend = "Bullish"
-        elif bullish_count <= 1 and volume_trend != "Rising":
-            overall_trend = "Bearish"
-        else:
-            overall_trend = "Neutral"
 
         trend_score = 0
         if current_price is not None and ema20 is not None and not pd.isna(ema20) and current_price > ema20:
@@ -1483,6 +1503,8 @@ class StockApp:
         fundamentals = fundamentals or {}
         valuation = fundamentals.get("valuation_view", {}).get("value", "Unknown")
         business_health = fundamentals.get("business_health", {}).get("value", "Unknown")
+        overall_trend = StockApp.classify_trend_score(trend_score)
+        investment_view = StockApp.calculate_investment_view(business_health, valuation, overall_trend)
 
         return {
             "current_price": current_price,
@@ -1500,6 +1522,7 @@ class StockApp:
             "volume_trend": volume_trend,
             "valuation": valuation,
             "business_health": business_health,
+            "investment_view": investment_view,
             "overall_trend": overall_trend
         }
 
@@ -1685,11 +1708,11 @@ class StockApp:
 
         def status_color(value: str) -> str:
             normalized = str(value).lower()
-            if normalized in {"above", "rising", "bullish", "golden cross", "cheap", "strong", "stable"}:
+            if normalized in {"above", "rising", "bullish", "strong bullish", "golden cross", "golden state", "cheap", "strong", "stable", "attractive"}:
                 return "#16a34a"
-            if normalized in {"below", "falling", "bearish", "death cross", "expensive", "weak"}:
+            if normalized in {"below", "falling", "bearish", "strong bearish", "death cross", "death state", "expensive", "weak", "risky"}:
                 return "#dc2626"
-            if normalized in {"neutral", "n/a", "none", "fair", "unknown"}:
+            if normalized in {"neutral", "n/a", "none", "fair", "unknown", "watchlist"}:
                 return "#64748b"
             return "#0ea5e9"
 
@@ -1708,6 +1731,24 @@ class StockApp:
             is_good = value > 0 if positive_is_good else value < 0
             return "#16a34a" if is_good else "#dc2626"
 
+        def from_52w_high_color(value: float | None) -> str:
+            if value is None or pd.isna(value):
+                return "#64748b"
+            if value > -0.10:
+                return "#16a34a"
+            if value >= -0.25:
+                return "#f97316"
+            return "#dc2626"
+
+        def from_52w_low_color(value: float | None) -> str:
+            if value is None or pd.isna(value):
+                return "#64748b"
+            if value > 0.30:
+                return "#16a34a"
+            if value >= 0.10:
+                return "#f97316"
+            return "#f97316"
+
         def rvol_color(value: float | None) -> str:
             if value is None or pd.isna(value):
                 return "#64748b"
@@ -1718,22 +1759,24 @@ class StockApp:
             return "#0ea5e9"
 
         trend_score = int(summary.get("trend_score", 0))
+        trend_label = summary.get("overall_trend", StockApp.classify_trend_score(trend_score))
         rows = [
             ("Price", price_text, "#111827"),
-            ("Trend Score", f"{trend_score}/5", trend_score_color(trend_score)),
+            ("Trend Score", f"{trend_score}/5 {trend_label}", trend_score_color(trend_score)),
             ("Cross", summary.get("cross", "None"), status_color(summary.get("cross", "None"))),
             ("SMA50 Dist", self.format_summary_percent(summary.get("distance_sma50")), distance_color(summary.get("distance_sma50"))),
             ("SMA200 Dist", self.format_summary_percent(summary.get("distance_sma200")), distance_color(summary.get("distance_sma200"))),
-            ("52W High Dist", self.format_summary_percent(summary.get("distance_52w_high")), distance_color(summary.get("distance_52w_high"), positive_is_good=False)),
-            ("52W Low Dist", self.format_summary_percent(summary.get("distance_52w_low")), distance_color(summary.get("distance_52w_low"))),
+            ("From 52W High", self.format_summary_percent(summary.get("distance_52w_high")), from_52w_high_color(summary.get("distance_52w_high"))),
+            ("From 52W Low", self.format_summary_percent(summary.get("distance_52w_low")), from_52w_low_color(summary.get("distance_52w_low"))),
             ("", "", "#111827"),
             ("Volume Trend", summary.get("volume_trend", "Neutral"), status_color(summary.get("volume_trend", "Neutral"))),
             ("RVOL", rvol_text, rvol_color(current_rvol)),
             ("ATR 14", atr_text, "#111827"),
             ("Valuation", summary.get("valuation", "Unknown"), status_color(summary.get("valuation", "Unknown"))),
             ("Business", summary.get("business_health", "Unknown"), status_color(summary.get("business_health", "Unknown"))),
+            ("Investment View", summary.get("investment_view", "Watchlist"), status_color(summary.get("investment_view", "Watchlist"))),
             ("", "", "#111827"),
-            ("Trend", summary.get("overall_trend", "Neutral").upper(), status_color(summary.get("overall_trend", "Neutral")))
+            ("Trend", trend_label.upper(), status_color(trend_label))
         ]
 
         card_left = 0.04
@@ -1769,8 +1812,8 @@ class StockApp:
         )
 
         row_y = card_top - 0.092
-        row_step = 0.052 if card_height > 0.80 else 0.041
-        font_size = 7.2 if card_height > 0.80 else 6.2
+        row_step = 0.046 if card_height > 0.80 else 0.038
+        font_size = 6.7 if card_height > 0.80 else 5.9
         for label, value, color in rows:
             if not label:
                 row_y -= row_step * 0.35
