@@ -774,15 +774,17 @@ class StockApp:
         return row
 
     @staticmethod
-    def calculate_eps_growth_yoy(quarterly_income: Any) -> float | None:
+    def calculate_eps_growth_yoy(quarterly_income: Any, annual_income: Any) -> tuple[float | None, str | None]:
         diluted_eps = StockApp.statement_row(quarterly_income, "Diluted EPS")
         basic_eps = StockApp.statement_row(quarterly_income, "Basic EPS")
         net_income = StockApp.statement_row(quarterly_income, "Net Income")
+        annual_diluted_eps = StockApp.statement_row(annual_income, "Diluted EPS")
 
         print("EPS Growth YoY debug:")
-        print("  desired method: Diluted EPS TTM vs Diluted EPS TTM one year ago")
-        print("  source preference: quarterly_income_stmt, row='Diluted EPS'")
-        print("  annual EPS used: no")
+        print("  source preference:")
+        print("    1. quarterly_income_stmt Diluted EPS TTM vs previous TTM")
+        print("    2. quarterly_income_stmt latest Diluted EPS quarter vs same quarter previous year")
+        print("    3. income_stmt annual Diluted EPS YoY")
         print("  basic EPS used: no")
         print("  net income used: no")
 
@@ -790,37 +792,90 @@ class StockApp:
             print(f"  Basic EPS available but ignored: {StockApp.format_debug_series(basic_eps)}")
         if net_income is not None:
             print(f"  Net Income available but ignored: {StockApp.format_debug_series(net_income)}")
+        if diluted_eps is not None:
+            print(f"  Diluted EPS raw quarterly values: {StockApp.format_debug_series(diluted_eps)}")
+        else:
+            print("  Diluted EPS unavailable in quarterly_income_stmt")
+        if annual_diluted_eps is not None:
+            print(f"  Diluted EPS raw annual values: {StockApp.format_debug_series(annual_diluted_eps)}")
+        else:
+            print("  Diluted EPS unavailable in income_stmt")
 
-        if diluted_eps is None:
-            print("  Diluted EPS unavailable in quarterly_income_stmt. EPS Growth YoY = N/A")
-            return None
+        result = StockApp.calculate_eps_growth_from_series(
+            diluted_eps,
+            current_count=4,
+            comparison_start=4,
+            comparison_count=4,
+            method="TTM YoY",
+            source_statement="quarterly_income_stmt"
+        )
+        if result[0] is not None:
+            return result
 
-        print(f"  Diluted EPS raw quarterly values: {StockApp.format_debug_series(diluted_eps)}")
-        if len(diluted_eps) < 8:
-            print(f"  Need at least 8 quarterly diluted EPS values for TTM YoY, found {len(diluted_eps)}. EPS Growth YoY = N/A")
-            return None
+        result = StockApp.calculate_eps_growth_from_series(
+            diluted_eps,
+            current_count=1,
+            comparison_start=4,
+            comparison_count=1,
+            method="Quarter YoY",
+            source_statement="quarterly_income_stmt"
+        )
+        if result[0] is not None:
+            return result
 
-        current_periods = diluted_eps.iloc[:4]
-        previous_periods = diluted_eps.iloc[4:8]
+        result = StockApp.calculate_eps_growth_from_series(
+            annual_diluted_eps,
+            current_count=1,
+            comparison_start=1,
+            comparison_count=1,
+            method="Annual YoY",
+            source_statement="income_stmt"
+        )
+        if result[0] is not None:
+            return result
+
+        print("  method used: N/A")
+        print("  current_eps: N/A")
+        print("  comparison_eps: N/A")
+        print("  calculated growth: N/A")
+        return None, None
+
+    @staticmethod
+    def calculate_eps_growth_from_series(
+        eps_values: pd.Series | None,
+        current_count: int,
+        comparison_start: int,
+        comparison_count: int,
+        method: str,
+        source_statement: str
+    ) -> tuple[float | None, str | None]:
+        required_values = comparison_start + comparison_count
+        if eps_values is None or len(eps_values) < required_values:
+            found_values = 0 if eps_values is None else len(eps_values)
+            print(f"  {method} skipped: need {required_values} diluted EPS values, found {found_values}")
+            return None, None
+
+        current_periods = eps_values.iloc[:current_count]
+        comparison_periods = eps_values.iloc[comparison_start:comparison_start + comparison_count]
         current_eps = float(current_periods.sum())
-        previous_eps = float(previous_periods.sum())
+        comparison_eps = float(comparison_periods.sum())
         current_dates = [StockApp.format_statement_date(date) for date in current_periods.index]
-        previous_dates = [StockApp.format_statement_date(date) for date in previous_periods.index]
+        comparison_dates = [StockApp.format_statement_date(date) for date in comparison_periods.index]
 
+        if comparison_eps == 0:
+            print(f"  {method} skipped: comparison_eps is zero")
+            return None, None
+
+        growth = (current_eps - comparison_eps) / abs(comparison_eps)
+        print(f"  method used: {method}")
         print(f"  current_eps: {current_eps}")
-        print(f"  previous_eps: {previous_eps}")
-        print(f"  current TTM dates: {current_dates}")
-        print(f"  previous TTM dates: {previous_dates}")
-        print("  source statement: quarterly_income_stmt")
+        print(f"  comparison_eps: {comparison_eps}")
+        print(f"  current dates: {current_dates}")
+        print(f"  comparison dates: {comparison_dates}")
+        print(f"  source statement: {source_statement}")
         print("  source row: Diluted EPS")
-
-        if previous_eps == 0:
-            print("  previous_eps is zero. EPS Growth YoY = N/A")
-            return None
-
-        growth = (current_eps - previous_eps) / abs(previous_eps)
-        print(f"  growth_percent: {growth * 100:.2f}%")
-        return growth
+        print(f"  calculated growth: {growth * 100:.2f}%")
+        return growth, method
 
     @staticmethod
     def format_statement_date(value: Any) -> str:
@@ -916,7 +971,7 @@ class StockApp:
         if revenue_growth is None:
             revenue_growth = StockApp.first_available(info, "revenueGrowth")
 
-        eps_growth = StockApp.calculate_eps_growth_yoy(quarterly_income)
+        eps_growth, eps_growth_method = StockApp.calculate_eps_growth_yoy(quarterly_income, income)
 
         free_cash_flow = StockApp.calculate_free_cash_flow(cashflow)
         if free_cash_flow is None:
@@ -944,7 +999,7 @@ class StockApp:
             "ev_revenue": {"label": "EV/Revenue", "value": StockApp.first_available(info, "enterpriseToRevenue"), "type": "multiple", "section": "Valuation"},
             "ev_ebitda": {"label": "EV/EBITDA", "value": StockApp.first_available(info, "enterpriseToEbitda"), "type": "multiple", "section": "Valuation"},
             "revenue_growth_yoy": {"label": "Revenue Growth YoY", "value": revenue_growth, "type": "percent", "section": "Growth & Cash Flow"},
-            "eps_growth_yoy": {"label": "EPS Growth YoY", "value": eps_growth, "type": "percent", "section": "Growth & Cash Flow"},
+            "eps_growth_yoy": {"label": "EPS Growth YoY", "value": eps_growth, "type": "percent", "section": "Growth & Cash Flow", "method": eps_growth_method},
             "free_cash_flow": {"label": "Free Cash Flow", "value": free_cash_flow, "type": "money", "section": "Growth & Cash Flow"},
             "fcf_trend": {"label": "FCF Trend", "value": fcf_trend, "type": "text", "section": "Growth & Cash Flow"},
             "operating_margin": {"label": "Operating Margin", "value": operating_margin, "type": "percent", "section": "Growth & Cash Flow"},
@@ -1486,6 +1541,9 @@ class StockApp:
                 status = metric.get("status", "neutral") if formatted_value != "N/A" else "neutral"
                 interpretation = status_label(metric_name, status, metric.get("value"))
                 value_text = formatted_value if not interpretation else f"{formatted_value}  {interpretation}"
+                method = metric.get("method")
+                if metric_name == "eps_growth_yoy" and method and formatted_value != "N/A":
+                    value_text = f"{formatted_value}\n({method})"
                 color = status_color(status)
 
                 ax.text(
@@ -1511,7 +1569,7 @@ class StockApp:
                     color=color,
                     zorder=7
                 )
-                row_y -= row_step
+                row_y -= row_step * (1.65 if "\n" in value_text else 1)
 
             row_y -= section_gap
 
