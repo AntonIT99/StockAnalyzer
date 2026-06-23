@@ -12,13 +12,14 @@ import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import FancyBboxPatch, Patch
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 
 MAX_MOVING_AVERAGE_WINDOW = 200
 CACHE_DIR = Path(__file__).with_name(".stock_cache")
 SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
 INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h"}
+COMPRESSED_INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
 PERIOD_OPTIONS = ["1h", "1d", "5d", "15d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", "max"]
 INTERVAL_OPTIONS = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "5d", "1wk", "1mo", "3mo", "6mo", "1y"]
 PERIOD_DURATIONS = {
@@ -380,7 +381,7 @@ class StockApp:
     @staticmethod
     def build_cache_key(ticker, period, interval, download_interval):
         cache_parts = {
-            "version": 3,
+            "version": 4,
             "ticker": ticker,
             "period": period,
             "interval": interval,
@@ -474,13 +475,27 @@ class StockApp:
             return None
 
         if interval == "1m":
-            return "5d"
+            return "7d"
 
         if interval == "2m":
-            return "1mo"
+            return "60d"
 
         if interval in {"5m", "15m", "30m"}:
-            return "1mo"
+            return "60d"
+
+        if interval == "1h":
+            warmup_periods = {
+                "1h": "3mo",
+                "1d": "3mo",
+                "5d": "3mo",
+                "15d": "3mo",
+                "1mo": "3mo",
+                "3mo": "6mo",
+                "6mo": "1y",
+                "1y": "2y",
+                "2y": "2y"
+            }
+            return warmup_periods.get(period, period)
 
         if period in {"1h", "1d", "5d", "15d", "1mo"}:
             return "1mo"
@@ -659,6 +674,70 @@ class StockApp:
 
         median_delta = deltas.median()
         return max(median_delta / pd.Timedelta(days=1) * 0.8, 0.0005)
+
+    @staticmethod
+    def uses_compressed_intraday_axis(interval: str) -> bool:
+        return interval in COMPRESSED_INTRADAY_INTERVALS
+
+    @staticmethod
+    def get_plot_x(data: pd.DataFrame, compressed_x: bool) -> pd.Index:
+        if compressed_x:
+            return pd.RangeIndex(len(data))
+        return data.index
+
+    @staticmethod
+    def get_plot_bar_width(data: pd.DataFrame, compressed_x: bool) -> float:
+        if compressed_x:
+            return 0.72
+        return StockApp.get_bar_width(data.index)
+
+    @staticmethod
+    def timestamp_to_plot_x(timestamp: Any, index: pd.Index, compressed_x: bool) -> Any:
+        if not compressed_x:
+            return timestamp
+        if index.empty:
+            return None
+
+        aligned_timestamp = StockApp.align_timestamp_to_index(timestamp, index)
+        try:
+            position = index.searchsorted(aligned_timestamp)
+        except Exception:
+            return None
+
+        if position <= 0:
+            return 0
+        if position >= len(index):
+            return len(index) - 1
+
+        before = index[position - 1]
+        after = index[position]
+        try:
+            if abs(aligned_timestamp - before) <= abs(after - aligned_timestamp):
+                return position - 1
+        except Exception:
+            pass
+        return position
+
+    @staticmethod
+    def configure_x_axis(ax: Any, data: pd.DataFrame, compressed_x: bool) -> None:
+        if not compressed_x:
+            return
+
+        index = data.index
+        ax.set_xlim(-0.5, max(len(index) - 0.5, 0.5))
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=8, integer=True, min_n_ticks=3))
+
+        def format_intraday_tick(value: float, _position: int) -> str:
+            tick_index = int(round(value))
+            if tick_index < 0 or tick_index >= len(index):
+                return ""
+            timestamp = pd.Timestamp(index[tick_index])
+            if timestamp.tzinfo is not None:
+                timestamp = timestamp.tz_convert(None)
+            return timestamp.strftime("%m-%d %H:%M")
+
+        ax.xaxis.set_major_formatter(FuncFormatter(format_intraday_tick))
+        ax.tick_params(axis="x", labelsize=8)
 
     @staticmethod
     def format_compact_number(value):
@@ -1556,10 +1635,13 @@ class StockApp:
         return data.index[data["VOLUME_SPIKE"].fillna(False)]
 
     @staticmethod
-    def draw_spike_lines(ax: Any, spike_times: pd.Index) -> None:
+    def draw_spike_lines(ax: Any, spike_times: pd.Index, data_index: pd.Index | None = None, compressed_x: bool = False) -> None:
         for spike_time in spike_times:
+            x_value = StockApp.timestamp_to_plot_x(spike_time, data_index, compressed_x) if data_index is not None else spike_time
+            if x_value is None:
+                continue
             ax.axvline(
-                spike_time,
+                x_value,
                 color="#f97316",
                 linewidth=0.75,
                 linestyle=":",
@@ -1589,12 +1671,14 @@ class StockApp:
         price_style: str,
         selected_indicators: dict[str, bool],
         spike_times: pd.Index,
-        earnings_events: pd.DataFrame
+        earnings_events: pd.DataFrame,
+        plot_x: pd.Index,
+        compressed_x: bool
     ) -> None:
         if price_style == "Candlesticks":
-            self.plot_candlesticks(ax, data)
+            self.plot_candlesticks(ax, data, plot_x, compressed_x)
         else:
-            ax.plot(data.index, data["Close"], label="Close", linewidth=1.6, color="#2563eb")
+            ax.plot(plot_x, data["Close"], label="Close", linewidth=1.6, color="#2563eb")
 
         indicator_specs = [
             ("EMA9", "EMA 9"),
@@ -1609,14 +1693,14 @@ class StockApp:
         ]
         for column, label in indicator_specs:
             if selected_indicators.get(column):
-                ax.plot(data.index, data[column], label=label, linewidth=1)
+                ax.plot(plot_x, data[column], label=label, linewidth=1)
 
         if selected_indicators.get("BOLLINGER"):
-            ax.plot(data.index, data["BB_UPPER"], label="Bollinger Upper", linewidth=0.9)
-            ax.plot(data.index, data["BB_LOWER"], label="Bollinger Lower", linewidth=0.9)
+            ax.plot(plot_x, data["BB_UPPER"], label="Bollinger Upper", linewidth=0.9)
+            ax.plot(plot_x, data["BB_LOWER"], label="Bollinger Lower", linewidth=0.9)
 
-        self.draw_spike_lines(ax, spike_times)
-        self.plot_earnings_markers(ax, data, earnings_events)
+        self.draw_spike_lines(ax, spike_times, data.index, compressed_x)
+        self.plot_earnings_markers(ax, data, earnings_events, compressed_x)
 
         ax.set_title(f"{ticker} Technical Chart")
         ax.set_ylabel("Price USD")
@@ -1633,7 +1717,7 @@ class StockApp:
         ax.legend(handles, labels, loc="upper left", fontsize=8, framealpha=0.88)
 
     @staticmethod
-    def plot_earnings_markers(ax: Any, data: pd.DataFrame, earnings_events: pd.DataFrame) -> None:
+    def plot_earnings_markers(ax: Any, data: pd.DataFrame, earnings_events: pd.DataFrame, compressed_x: bool = False) -> None:
         if earnings_events.empty:
             return
 
@@ -1644,10 +1728,13 @@ class StockApp:
 
         for _, event in earnings_events.iterrows():
             event_date = event["date"]
+            event_x = StockApp.timestamp_to_plot_x(event_date, data.index, compressed_x)
+            if event_x is None:
+                continue
             label = event["label"]
-            ax.axvline(event_date, color="#64748b", linestyle=":", linewidth=0.8, alpha=0.55, zorder=1)
+            ax.axvline(event_x, color="#64748b", linestyle=":", linewidth=0.8, alpha=0.55, zorder=1)
             ax.text(
-                event_date,
+                event_x,
                 marker_y,
                 label,
                 ha="center",
@@ -1664,8 +1751,8 @@ class StockApp:
                 zorder=6
             )
 
-    def plot_candlesticks(self, ax: Any, data: pd.DataFrame) -> None:
-        bar_width = self.get_bar_width(data.index) * 0.72
+    def plot_candlesticks(self, ax: Any, data: pd.DataFrame, plot_x: pd.Index, compressed_x: bool) -> None:
+        bar_width = self.get_plot_bar_width(data, compressed_x) * 0.72
         up_color = "#16a34a"
         down_color = "#dc2626"
 
@@ -1678,9 +1765,9 @@ class StockApp:
         body_bottom = body_bottom.mask(small_body, data["Close"] - (min_body_height / 2))
         body_height = body_height.mask(small_body, min_body_height)
 
-        ax.vlines(data.index, data["Low"], data["High"], color=colors.tolist(), linewidth=0.9, alpha=0.9, label="_nolegend_")
+        ax.vlines(plot_x, data["Low"], data["High"], color=colors.tolist(), linewidth=0.9, alpha=0.9, label="_nolegend_")
         ax.bar(
-            data.index,
+            plot_x,
             body_height,
             bottom=body_bottom,
             width=bar_width,
@@ -2004,17 +2091,19 @@ class StockApp:
         volume_ax: Any,
         data: pd.DataFrame,
         price_ax: Any,
+        plot_x: pd.Index,
+        compressed_x: bool,
         show_volume_ema50: bool = True,
         show_spike_shading: bool = False
     ) -> Any:
-        bar_width = self.get_bar_width(data.index)
+        bar_width = self.get_plot_bar_width(data, compressed_x)
 
         rising_volume = data["Close"] >= data["Close"].shift()
         rising_volume = rising_volume.fillna(True)
         bar_colors = rising_volume.map({True: "#16a34a", False: "#dc2626"})
 
         volume_ax.bar(
-            data.index,
+            plot_x,
             data["Volume"],
             label="Volume",
             width=bar_width,
@@ -2023,7 +2112,7 @@ class StockApp:
             edgecolor="none"
         )
         volume_ax.plot(
-            data.index,
+            plot_x,
             data["VOLUME_AVG30"],
             label="30-Day Avg Volume",
             linewidth=2.2,
@@ -2031,7 +2120,7 @@ class StockApp:
         )
         if show_volume_ema50:
             volume_ax.plot(
-                data.index,
+                plot_x,
                 data["VOLUME_EMA50"],
                 label="Volume EMA 50",
                 linewidth=1.5,
@@ -2046,7 +2135,7 @@ class StockApp:
 
         rvol_ax = volume_ax.twinx()
         rvol_ax.plot(
-            data.index,
+            plot_x,
             data["RVOL"],
             label="RVOL",
             linewidth=1.4,
@@ -2062,8 +2151,9 @@ class StockApp:
         high_rvol = data["RVOL"] > 2
         if high_rvol.any():
             event_data = data.loc[high_rvol]
+            event_positions = plot_x[data.index.get_indexer(event_data.index)]
             rvol_ax.scatter(
-                event_data.index,
+                event_positions,
                 event_data["RVOL"],
                 label="RVOL > 2",
                 color="#f97316",
@@ -2074,18 +2164,18 @@ class StockApp:
             )
 
             if show_spike_shading:
-                highlight_half_width = pd.Timedelta(days=bar_width / 2)
-                for event_time in event_data.index:
+                highlight_half_width = bar_width / 2
+                for event_position in event_positions:
                     volume_ax.axvspan(
-                        event_time - highlight_half_width,
-                        event_time + highlight_half_width,
+                        event_position - highlight_half_width,
+                        event_position + highlight_half_width,
                         color="#f97316",
                         alpha=0.08,
                         linewidth=0
                     )
 
         spike_times = self.get_spike_times(data)
-        self.draw_spike_lines(volume_ax, spike_times)
+        self.draw_spike_lines(volume_ax, spike_times, data.index, compressed_x)
 
         latest_volume = self.latest_valid_value(data["Volume"])
         latest_avg_volume = self.latest_valid_value(data["VOLUME_AVG30"])
@@ -2105,9 +2195,10 @@ class StockApp:
         if not volume_values.empty:
             max_volume_time = volume_values.idxmax()
             max_volume = volume_values.loc[max_volume_time]
+            max_volume_x = self.timestamp_to_plot_x(max_volume_time, data.index, compressed_x)
             self.annotate_point(
                 volume_ax,
-                max_volume_time,
+                max_volume_x,
                 max_volume,
                 f"Max Vol {self.format_compact_number(max_volume)}",
                 "#2563eb"
@@ -2117,9 +2208,10 @@ class StockApp:
         if not rvol_values.empty:
             max_rvol_time = rvol_values.idxmax()
             max_rvol = rvol_values.loc[max_rvol_time]
+            max_rvol_x = self.timestamp_to_plot_x(max_rvol_time, data.index, compressed_x)
             self.annotate_point(
                 rvol_ax,
-                max_rvol_time,
+                max_rvol_x,
                 max_rvol,
                 f"Max RVOL {max_rvol:.2f}x",
                 "#f97316"
@@ -2225,6 +2317,8 @@ class StockApp:
             summary_ax = self.figure.add_subplot(chart_grid[:, 1])
             fundamentals_ax = None
 
+        compressed_x = self.uses_compressed_intraday_axis(self.interval_var.get())
+        plot_x = self.get_plot_x(data, compressed_x)
         debug_fundamentals = self.show_debug_fundamentals.get()
         fundamental_metrics = self.get_fundamentals(ticker, refresh=refresh_fundamentals, debug=debug_fundamentals) if show_fundamentals else {}
         if show_fundamentals and debug_fundamentals:
@@ -2243,8 +2337,11 @@ class StockApp:
             self.price_style_var.get(),
             self.get_selected_indicators(),
             spike_times,
-            earnings_events
+            earnings_events,
+            plot_x,
+            compressed_x
         )
+        self.configure_x_axis(price_ax, data, compressed_x)
         self.add_signal_summary_box(summary_ax, signal_summary, card_bottom=0.03, card_height=0.94)
         if fundamentals_ax is not None:
             self.draw_fundamental_dashboard(fundamentals_ax, fundamental_metrics, card_bottom=0.03, card_height=0.94)
@@ -2253,22 +2350,24 @@ class StockApp:
 
         if self.show_rsi.get():
             rsi_ax = self.figure.add_subplot(chart_grid[row, 0], sharex=price_ax)
-            rsi_ax.plot(data.index, data["RSI"], label="RSI 14")
+            rsi_ax.plot(plot_x, data["RSI"], label="RSI 14")
             rsi_ax.axhline(70, linestyle="--", linewidth=0.8)
             rsi_ax.axhline(30, linestyle="--", linewidth=0.8)
             rsi_ax.set_ylabel("RSI")
             rsi_ax.grid(True, alpha=0.3)
             rsi_ax.legend(loc="upper left")
+            self.configure_x_axis(rsi_ax, data, compressed_x)
             row += 1
 
         if self.show_macd.get():
             macd_ax = self.figure.add_subplot(chart_grid[row, 0], sharex=price_ax)
-            macd_ax.plot(data.index, data["MACD"], label="MACD")
-            macd_ax.plot(data.index, data["MACD_SIGNAL"], label="Signal")
+            macd_ax.plot(plot_x, data["MACD"], label="MACD")
+            macd_ax.plot(plot_x, data["MACD_SIGNAL"], label="Signal")
             macd_ax.axhline(0, linewidth=0.8)
             macd_ax.set_ylabel("MACD")
             macd_ax.grid(True, alpha=0.3)
             macd_ax.legend(loc="upper left")
+            self.configure_x_axis(macd_ax, data, compressed_x)
             row += 1
 
         if self.show_volume.get():
@@ -2277,17 +2376,21 @@ class StockApp:
                 volume_ax,
                 data,
                 price_ax,
+                plot_x,
+                compressed_x,
                 show_volume_ema50=self.show_volume_ema50.get(),
                 show_spike_shading=False
             )
+            self.configure_x_axis(volume_ax, data, compressed_x)
             row += 1
 
         if self.show_atr.get():
             atr_ax = self.figure.add_subplot(chart_grid[row, 0], sharex=price_ax)
-            atr_ax.plot(data.index, data["ATR14"], label="ATR 14")
+            atr_ax.plot(plot_x, data["ATR14"], label="ATR 14")
             atr_ax.set_ylabel("ATR")
             atr_ax.grid(True, alpha=0.3)
             atr_ax.legend(loc="upper left")
+            self.configure_x_axis(atr_ax, data, compressed_x)
 
         self.canvas.draw()
         self.save_settings()
