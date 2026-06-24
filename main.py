@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -176,6 +177,9 @@ class StockApp:
         self._fundamentals_cache: dict[str, dict[str, Any]] = {}
         self._cursor_contexts: dict[Any, dict[str, Any]] = {}
         self._cursor_active_ax: Any | None = None
+        self._last_cursor_key: tuple[Any, int] | None = None
+        self._last_hover_time = 0.0
+        self._hover_min_interval = 1 / 40
 
         self._build_ui()
         self.canvas.mpl_connect("motion_notify_event", self.on_chart_hover)
@@ -1760,6 +1764,31 @@ class StockApp:
             return np.asarray(plot_x, dtype=float)
 
     @staticmethod
+    def find_nearest_sorted_index(x_numeric: np.ndarray, cursor_x: float) -> int | None:
+        if x_numeric is None or len(x_numeric) == 0:
+            return None
+
+        try:
+            cursor_x = float(cursor_x)
+        except (TypeError, ValueError):
+            return None
+
+        if not np.isfinite(cursor_x):
+            return None
+
+        position = int(np.searchsorted(x_numeric, cursor_x))
+        if position <= 0:
+            return 0
+        if position >= len(x_numeric):
+            return len(x_numeric) - 1
+
+        left_index = position - 1
+        right_index = position
+        if abs(cursor_x - x_numeric[left_index]) <= abs(x_numeric[right_index] - cursor_x):
+            return left_index
+        return right_index
+
+    @staticmethod
     def format_cursor_timestamp(value: Any) -> str:
         try:
             timestamp = pd.Timestamp(value)
@@ -1918,32 +1947,56 @@ class StockApp:
             "y_label": y_label
         }
 
+    @staticmethod
+    def set_artist_visible(artist: Any, visible: bool) -> bool:
+        if artist.get_visible() == visible:
+            return False
+        artist.set_visible(visible)
+        return True
+
+    def hide_cursor_context(self, context: dict[str, Any] | None) -> bool:
+        if context is None:
+            return False
+
+        changed = False
+        for artist in context["artists"]:
+            if self.set_artist_visible(artist, False):
+                changed = True
+
+        return changed
+
     def hide_chart_cursor(self, _event: Any | None = None) -> None:
         changed = False
         for context in self._cursor_contexts.values():
-            for artist in context["artists"]:
-                if artist.get_visible():
-                    artist.set_visible(False)
-                    changed = True
+            if self.hide_cursor_context(context):
+                changed = True
 
         if changed:
             self.canvas.draw_idle()
         self._cursor_active_ax = None
+        self._last_cursor_key = None
 
     def on_chart_hover(self, event: Any) -> None:
         context = self._cursor_contexts.get(event.inaxes)
-        if context is None or event.xdata is None:
-            self.hide_chart_cursor()
+        if context is None:
+            return
+        if event.xdata is None or event.ydata is None:
             return
 
         x_numeric = context["x_numeric"]
-        if len(x_numeric) == 0:
-            self.hide_chart_cursor()
+        point_index = self.find_nearest_sorted_index(x_numeric, event.xdata)
+        if point_index is None:
             return
 
-        cursor_x = float(event.xdata)
-        point_index = int(np.nanargmin(np.abs(x_numeric - cursor_x)))
         point_index = max(0, min(point_index, len(context["data"]) - 1))
+        cursor_key = (event.inaxes, point_index)
+        if cursor_key == self._last_cursor_key:
+            return
+
+        now = time.perf_counter()
+        if self._cursor_active_ax is event.inaxes and now - self._last_hover_time < self._hover_min_interval:
+            return
+
         row = context["data"].iloc[point_index]
         snapped_x = context["x_numeric"][point_index]
         timestamp = context["data"].index[point_index]
@@ -1956,25 +2009,33 @@ class StockApp:
             values.append((item, value))
 
         if not values:
-            self.hide_chart_cursor()
             return
 
-        if event.ydata is None:
-            nearest_item, nearest_y = values[0]
-        else:
-            nearest_item, nearest_y = min(values, key=lambda item_value: abs(item_value[1] - event.ydata))
+        nearest_item, nearest_y = min(values, key=lambda item_value: abs(item_value[1] - event.ydata))
 
-        for ax, other_context in self._cursor_contexts.items():
-            if ax is event.inaxes:
-                continue
-            for artist in other_context["artists"]:
-                artist.set_visible(False)
+        previous_context = self._cursor_contexts.get(self._cursor_active_ax)
+        changed = False
+        if self._cursor_active_ax is not None and self._cursor_active_ax is not event.inaxes:
+            changed = self.hide_cursor_context(previous_context) or changed
+            self._last_cursor_key = None
 
-        context["vline"].set_xdata([snapped_x, snapped_x])
-        context["hline"].set_ydata([nearest_y, nearest_y])
-        context["markers"].set_offsets(np.asarray([[snapped_x, value] for _item, value in values], dtype=float))
-        context["markers"].set_facecolors([item["color"] for item, _value in values])
-        context["markers"].set_edgecolors(["white"] * len(values))
+        new_vline_x = [snapped_x, snapped_x]
+        if list(context["vline"].get_xdata()) != new_vline_x:
+            context["vline"].set_xdata(new_vline_x)
+            changed = True
+
+        new_hline_y = [nearest_y, nearest_y]
+        if list(context["hline"].get_ydata()) != new_hline_y:
+            context["hline"].set_ydata(new_hline_y)
+            changed = True
+
+        marker_offsets = np.asarray([[snapped_x, value] for _item, value in values], dtype=float)
+        current_offsets = context["markers"].get_offsets()
+        if current_offsets.shape != marker_offsets.shape or not np.array_equal(current_offsets, marker_offsets):
+            context["markers"].set_offsets(marker_offsets)
+            context["markers"].set_facecolors([item["color"] for item, _value in values])
+            context["markers"].set_edgecolors(["white"] * len(values))
+            changed = True
 
         x_text = self.format_cursor_timestamp(timestamp)
         tooltip_lines = [x_text]
@@ -1982,18 +2043,42 @@ class StockApp:
             f"{item['label']}: {self.format_cursor_value(item['column'], value)}"
             for item, value in values
         )
-        context["annotation"].xy = (snapped_x, nearest_y)
-        context["annotation"].set_text("\n".join(tooltip_lines))
-        context["x_label"].set_position((snapped_x, -0.035))
-        context["x_label"].set_text(x_text)
-        context["y_label"].set_position((1.004, nearest_y))
-        context["y_label"].set_text(self.format_cursor_value(nearest_item["column"], nearest_y))
+        annotation_xy = (snapped_x, nearest_y)
+        if context["annotation"].xy != annotation_xy:
+            context["annotation"].xy = annotation_xy
+            changed = True
+
+        tooltip_text = "\n".join(tooltip_lines)
+        if context["annotation"].get_text() != tooltip_text:
+            context["annotation"].set_text(tooltip_text)
+            changed = True
+
+        x_label_position = (snapped_x, -0.035)
+        if context["x_label"].get_position() != x_label_position:
+            context["x_label"].set_position(x_label_position)
+            changed = True
+        if context["x_label"].get_text() != x_text:
+            context["x_label"].set_text(x_text)
+            changed = True
+
+        y_label_position = (1.004, nearest_y)
+        if context["y_label"].get_position() != y_label_position:
+            context["y_label"].set_position(y_label_position)
+            changed = True
+        y_text = self.format_cursor_value(nearest_item["column"], nearest_y)
+        if context["y_label"].get_text() != y_text:
+            context["y_label"].set_text(y_text)
+            changed = True
 
         for artist in context["artists"]:
-            artist.set_visible(True)
+            if self.set_artist_visible(artist, True):
+                changed = True
 
         self._cursor_active_ax = event.inaxes
-        self.canvas.draw_idle()
+        self._last_cursor_key = cursor_key
+        self._last_hover_time = now
+        if changed:
+            self.canvas.draw_idle()
 
     @staticmethod
     def get_spike_times(data: pd.DataFrame) -> pd.Index:
