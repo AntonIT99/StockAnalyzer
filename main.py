@@ -140,8 +140,9 @@ class StockApp:
             period = "6mo"
 
         interval = settings.get("interval", "1d")
-        if interval not in self.get_allowed_intervals(period):
-            interval = "1d" if "1d" in self.get_allowed_intervals(period) else self.get_allowed_intervals(period)[-1]
+        allowed_intervals = self.get_allowed_intervals(period)
+        if interval not in allowed_intervals:
+            interval = allowed_intervals[0]
 
         self.ticker_var = tk.StringVar(value=ticker)
         self.period_var = tk.StringVar(value=period)
@@ -293,7 +294,7 @@ class StockApp:
         self.interval_combobox["values"] = allowed_intervals
 
         if self.interval_var.get() not in allowed_intervals:
-            self.interval_var.set(allowed_intervals[-1])
+            self.interval_var.set(allowed_intervals[0])
 
         if persist:
             self.save_settings()
@@ -314,10 +315,10 @@ class StockApp:
         if period_duration is None:
             return max_lookback is None
 
-        if INTERVAL_DURATIONS[interval] > period_duration:
+        if INTERVAL_DURATIONS[interval] >= period_duration:
             return False
 
-        return max_lookback is None or period_duration <= max_lookback
+        return max_lookback is None or period_duration < max_lookback
 
     def download_data(self):
         ticker = self.get_ticker()
