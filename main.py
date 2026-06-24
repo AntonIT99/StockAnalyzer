@@ -16,6 +16,7 @@ from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 
 MAX_MOVING_AVERAGE_WINDOW = 200
+DAILY_SIGNAL_PERIOD = "2y"
 CACHE_DIR = Path(__file__).with_name(".stock_cache")
 SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
 INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h"}
@@ -366,6 +367,34 @@ class StockApp:
             data = self.resample_ohlcv(data, RESAMPLE_RULES[interval])
 
         return data.dropna(), visible_start
+
+    def download_daily_signal_data(self, ticker: str) -> pd.DataFrame:
+        cache_key = self.build_cache_key(ticker, DAILY_SIGNAL_PERIOD, "daily-structural", "1d")
+        data = self.load_cached_data(cache_key, "1d")
+
+        if data is None:
+            try:
+                data = yf.download(
+                    ticker,
+                    period=DAILY_SIGNAL_PERIOD,
+                    interval="1d",
+                    auto_adjust=True,
+                    progress=False
+                )
+            except Exception:
+                return pd.DataFrame()
+
+            data = self.flatten_yfinance_columns(data)
+            if data is None or data.empty:
+                return pd.DataFrame()
+
+            self.save_cached_data(cache_key, data)
+
+        data = self.flatten_yfinance_columns(data)
+        if data is None or data.empty or "Close" not in data:
+            return pd.DataFrame()
+
+        return self.add_daily_structural_indicators(data.dropna())
 
     @staticmethod
     def flatten_yfinance_columns(data: pd.DataFrame) -> pd.DataFrame:
@@ -1438,6 +1467,10 @@ class StockApp:
         return values.iloc[-1]
 
     @staticmethod
+    def is_valid_number(value: Any) -> bool:
+        return value is not None and not pd.isna(value)
+
+    @staticmethod
     def calculate_volume_indicators(data: pd.DataFrame) -> pd.DataFrame:
         if "Volume" not in data:
             return data
@@ -1465,15 +1498,14 @@ class StockApp:
 
     @staticmethod
     def compare_price_to_level(price: float | None, level: float | None) -> str:
-        if price is None or level is None or pd.isna(price) or pd.isna(level):
+        if not StockApp.is_valid_number(price) or not StockApp.is_valid_number(level):
             return "n/a"
 
         return "Above" if price >= level else "Below"
 
     @staticmethod
-    @staticmethod
     def percentage_distance(value: float | None, reference: float | None) -> float | None:
-        if value is None or reference is None or pd.isna(value) or pd.isna(reference) or reference == 0:
+        if not StockApp.is_valid_number(value) or not StockApp.is_valid_number(reference) or reference == 0:
             return None
         return (value - reference) / reference
 
@@ -1529,7 +1561,35 @@ class StockApp:
         return state
 
     @staticmethod
-    def classify_trend_score(score: int) -> str:
+    def calculate_daily_cross(data: pd.DataFrame) -> str:
+        if "DAILY_SMA50" not in data or "DAILY_SMA200" not in data:
+            return "N/A"
+
+        cross_data = data[["DAILY_SMA50", "DAILY_SMA200"]].dropna()
+        if cross_data.empty:
+            return "N/A"
+
+        current = cross_data.iloc[-1]
+        if current["DAILY_SMA50"] > current["DAILY_SMA200"]:
+            state = "Golden State"
+        elif current["DAILY_SMA50"] < current["DAILY_SMA200"]:
+            state = "Death State"
+        else:
+            state = "None"
+
+        if len(cross_data) >= 2:
+            previous = cross_data.iloc[-2]
+            if previous["DAILY_SMA50"] <= previous["DAILY_SMA200"] and current["DAILY_SMA50"] > current["DAILY_SMA200"]:
+                return "Golden Cross"
+            if previous["DAILY_SMA50"] >= previous["DAILY_SMA200"] and current["DAILY_SMA50"] < current["DAILY_SMA200"]:
+                return "Death Cross"
+
+        return state
+
+    @staticmethod
+    def classify_trend_score(score: int | None) -> str:
+        if score is None:
+            return "N/A"
         if score >= 5:
             return "Strong Bullish"
         if score == 4:
@@ -1557,52 +1617,106 @@ class StockApp:
         return "Watchlist"
 
     @staticmethod
-    def calculate_signal_summary(data: pd.DataFrame, fundamentals: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    def calculate_daily_trend_score(data: pd.DataFrame) -> int | None:
+        current_price = StockApp.latest_valid_value(data.get("Close", pd.Series(dtype=float)))
+        ema20 = StockApp.latest_valid_value(data.get("DAILY_EMA20", pd.Series(dtype=float)))
+        ema50 = StockApp.latest_valid_value(data.get("DAILY_EMA50", pd.Series(dtype=float)))
+        ema100 = StockApp.latest_valid_value(data.get("DAILY_EMA100", pd.Series(dtype=float)))
+        ema200 = StockApp.latest_valid_value(data.get("DAILY_EMA200", pd.Series(dtype=float)))
+        sma50 = StockApp.latest_valid_value(data.get("DAILY_SMA50", pd.Series(dtype=float)))
+        sma200 = StockApp.latest_valid_value(data.get("DAILY_SMA200", pd.Series(dtype=float)))
+        required_values = [current_price, ema20, ema50, ema100, ema200, sma50, sma200]
+        if not all(StockApp.is_valid_number(value) for value in required_values):
+            return None
+
+        trend_score = 0
+        if current_price > ema20:
+            trend_score += 1
+        if ema20 > ema50:
+            trend_score += 1
+        if ema50 > ema100:
+            trend_score += 1
+        if ema100 > ema200:
+            trend_score += 1
+        if sma50 > sma200:
+            trend_score += 1
+
+        return trend_score
+
+    @staticmethod
+    def calculate_daily_structural_summary(data: pd.DataFrame | None) -> dict[str, Any]:
+        empty_summary = {
+            "daily_trend_score": None,
+            "daily_trend": "N/A",
+            "daily_cross": "N/A",
+            "price_vs_daily_sma50": "n/a",
+            "price_vs_daily_sma200": "n/a",
+            "distance_daily_sma50": None,
+            "distance_daily_sma200": None,
+            "distance_52w_high": None,
+            "distance_52w_low": None
+        }
+        if data is None or data.empty or "Close" not in data:
+            return empty_summary
+
+        current_price = StockApp.latest_valid_value(data["Close"])
+        sma50 = StockApp.latest_valid_value(data.get("DAILY_SMA50", pd.Series(dtype=float)))
+        sma200 = StockApp.latest_valid_value(data.get("DAILY_SMA200", pd.Series(dtype=float)))
+        high_52w, low_52w = StockApp.calculate_52w_levels(data)
+        trend_score = StockApp.calculate_daily_trend_score(data)
+        daily_trend = StockApp.classify_trend_score(trend_score)
+
+        return {
+            "daily_trend_score": trend_score,
+            "daily_trend": daily_trend,
+            "daily_cross": StockApp.calculate_daily_cross(data),
+            "price_vs_daily_sma50": StockApp.compare_price_to_level(current_price, sma50),
+            "price_vs_daily_sma200": StockApp.compare_price_to_level(current_price, sma200),
+            "distance_daily_sma50": StockApp.percentage_distance(current_price, sma50),
+            "distance_daily_sma200": StockApp.percentage_distance(current_price, sma200),
+            "distance_52w_high": StockApp.percentage_distance(current_price, high_52w),
+            "distance_52w_low": StockApp.percentage_distance(current_price, low_52w)
+        }
+
+    @staticmethod
+    def calculate_signal_summary(
+        data: pd.DataFrame,
+        daily_data: pd.DataFrame | None = None,
+        fundamentals: dict[str, dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        if fundamentals is None and isinstance(daily_data, dict):
+            fundamentals = daily_data
+            daily_data = None
+
         current_price = StockApp.latest_valid_value(data["Close"])
         current_rvol = StockApp.latest_valid_value(data.get("RVOL", pd.Series(dtype=float)))
         current_atr = StockApp.latest_valid_value(data.get("ATR14", pd.Series(dtype=float)))
-        sma50 = StockApp.latest_valid_value(data.get("SMA50", pd.Series(dtype=float)))
-        sma200 = StockApp.latest_valid_value(data.get("SMA200", pd.Series(dtype=float)))
-        ema20 = StockApp.latest_valid_value(data.get("EMA20", pd.Series(dtype=float)))
         volume_trend = StockApp.calculate_volume_trend(data)
-        high_52w, low_52w = StockApp.calculate_52w_levels(data)
-
-        trend_score = 0
-        if current_price is not None and ema20 is not None and not pd.isna(ema20) and current_price > ema20:
-            trend_score += 1
-        if current_price is not None and sma50 is not None and not pd.isna(sma50) and current_price > sma50:
-            trend_score += 1
-        if current_price is not None and sma200 is not None and not pd.isna(sma200) and current_price > sma200:
-            trend_score += 1
-        if sma50 is not None and sma200 is not None and not pd.isna(sma50) and not pd.isna(sma200) and sma50 > sma200:
-            trend_score += 1
-        if current_rvol is not None and not pd.isna(current_rvol) and current_rvol > 1:
-            trend_score += 1
+        daily_summary = StockApp.calculate_daily_structural_summary(daily_data)
 
         fundamentals = fundamentals or {}
         valuation = fundamentals.get("valuation_view", {}).get("value", "Unknown")
         business_health = fundamentals.get("business_health", {}).get("value", "Unknown")
-        overall_trend = StockApp.classify_trend_score(trend_score)
-        investment_view = StockApp.calculate_investment_view(business_health, valuation, overall_trend)
+        daily_trend = daily_summary["daily_trend"]
+        investment_view = StockApp.calculate_investment_view(business_health, valuation, daily_trend)
 
         return {
             "current_price": current_price,
-            "price_vs_sma50": StockApp.compare_price_to_level(current_price, sma50),
-            "price_vs_sma200": StockApp.compare_price_to_level(current_price, sma200),
-            "price_vs_ema20": StockApp.compare_price_to_level(current_price, ema20),
-            "trend_score": trend_score,
-            "cross": StockApp.calculate_cross(data),
-            "distance_sma50": StockApp.percentage_distance(current_price, sma50),
-            "distance_sma200": StockApp.percentage_distance(current_price, sma200),
-            "distance_52w_high": StockApp.percentage_distance(current_price, high_52w),
-            "distance_52w_low": StockApp.percentage_distance(current_price, low_52w),
+            **daily_summary,
+            "trend_score": daily_summary["daily_trend_score"],
+            "overall_trend": daily_trend,
+            "cross": daily_summary["daily_cross"],
+            "price_vs_sma50": daily_summary["price_vs_daily_sma50"],
+            "price_vs_sma200": daily_summary["price_vs_daily_sma200"],
+            "distance_sma50": daily_summary["distance_daily_sma50"],
+            "distance_sma200": daily_summary["distance_daily_sma200"],
             "current_rvol": current_rvol,
             "atr14": current_atr,
             "volume_trend": volume_trend,
             "valuation": valuation,
             "business_health": business_health,
             "investment_view": investment_view,
-            "overall_trend": overall_trend
+            "price_vs_ema20": "n/a"
         }
 
     @staticmethod
@@ -1804,6 +1918,8 @@ class StockApp:
             return "#0ea5e9"
 
         def trend_score_color(value: int) -> str:
+            if value is None:
+                return "#64748b"
             if value >= 4:
                 return "#16a34a"
             if value <= 1:
@@ -1845,16 +1961,30 @@ class StockApp:
                 return "#16a34a"
             return "#0ea5e9"
 
-        trend_score = int(summary.get("trend_score", 0))
-        trend_label = summary.get("overall_trend", StockApp.classify_trend_score(trend_score))
+        def format_level_distance(level_state: str, distance: float | None) -> str:
+            if str(level_state).lower() == "n/a" or distance is None or pd.isna(distance):
+                return "N/A"
+            return f"{level_state} {self.format_summary_percent(distance)}"
+
+        trend_score = summary.get("daily_trend_score")
+        trend_label = summary.get("daily_trend", StockApp.classify_trend_score(trend_score))
+        trend_score_text = "N/A" if trend_score is None else f"{int(trend_score)}/5 {trend_label}"
         rows = [
             ("Price", price_text, "#111827"),
-            ("Trend Score", f"{trend_score}/5 {trend_label}", trend_score_color(trend_score)),
-            ("Cross", summary.get("cross", "None"), status_color(summary.get("cross", "None"))),
-            ("SMA50 Dist", self.format_summary_percent(summary.get("distance_sma50")), distance_color(summary.get("distance_sma50"))),
-            ("SMA200 Dist", self.format_summary_percent(summary.get("distance_sma200")), distance_color(summary.get("distance_sma200"))),
-            ("From 52W High", self.format_summary_percent(summary.get("distance_52w_high")), from_52w_high_color(summary.get("distance_52w_high"))),
-            ("From 52W Low", self.format_summary_percent(summary.get("distance_52w_low")), from_52w_low_color(summary.get("distance_52w_low"))),
+            ("Daily Trend Score", trend_score_text, trend_score_color(trend_score)),
+            ("Daily Cross", summary.get("daily_cross", "N/A"), status_color(summary.get("daily_cross", "N/A"))),
+            (
+                "vs Daily SMA50",
+                format_level_distance(summary.get("price_vs_daily_sma50", "n/a"), summary.get("distance_daily_sma50")),
+                distance_color(summary.get("distance_daily_sma50"))
+            ),
+            (
+                "vs Daily SMA200",
+                format_level_distance(summary.get("price_vs_daily_sma200", "n/a"), summary.get("distance_daily_sma200")),
+                distance_color(summary.get("distance_daily_sma200"))
+            ),
+            ("From Daily 52W High", self.format_summary_percent(summary.get("distance_52w_high")), from_52w_high_color(summary.get("distance_52w_high"))),
+            ("From Daily 52W Low", self.format_summary_percent(summary.get("distance_52w_low")), from_52w_low_color(summary.get("distance_52w_low"))),
             ("", "", "#111827"),
             ("Volume Trend", summary.get("volume_trend", "Neutral"), status_color(summary.get("volume_trend", "Neutral"))),
             ("RVOL", rvol_text, rvol_color(current_rvol)),
@@ -1863,7 +1993,7 @@ class StockApp:
             ("Business", summary.get("business_health", "Unknown"), status_color(summary.get("business_health", "Unknown"))),
             ("Investment View", summary.get("investment_view", "Watchlist"), status_color(summary.get("investment_view", "Watchlist"))),
             ("", "", "#111827"),
-            ("Trend", trend_label.upper(), status_color(trend_label))
+            ("Daily Trend", trend_label.upper(), status_color(trend_label))
         ]
 
         card_left = 0.04
@@ -1925,7 +2055,7 @@ class StockApp:
                 ha="right",
                 va="top",
                 fontsize=font_size,
-                fontweight="bold" if label in {"Volume Trend", "Trend"} or label.startswith("vs ") else "normal",
+                fontweight="bold" if label in {"Volume Trend", "Trend", "Daily Trend"} or label.startswith("vs ") else "normal",
                 color=color,
                 zorder=7
             )
@@ -2231,6 +2361,17 @@ class StockApp:
         return volume_ax
 
     @staticmethod
+    def add_daily_structural_indicators(data: pd.DataFrame) -> pd.DataFrame:
+        data = data.copy()
+        for span in (20, 50, 100, 200):
+            data[f"DAILY_EMA{span}"] = data["Close"].ewm(span=span, adjust=False).mean()
+
+        for window in (20, 50, 100, 200):
+            data[f"DAILY_SMA{window}"] = data["Close"].rolling(window).mean()
+
+        return data
+
+    @staticmethod
     def add_indicators(data):
         data["EMA9"] = data["Close"].ewm(span=9, adjust=False).mean()
         data["EMA12"] = data["Close"].ewm(span=12, adjust=False).mean()
@@ -2323,7 +2464,8 @@ class StockApp:
         fundamental_metrics = self.get_fundamentals(ticker, refresh=refresh_fundamentals, debug=debug_fundamentals) if show_fundamentals else {}
         if show_fundamentals and debug_fundamentals:
             self.print_fundamentals_debug(fundamental_metrics)
-        signal_summary = self.calculate_signal_summary(data, fundamental_metrics)
+        daily_signal_data = self.download_daily_signal_data(ticker)
+        signal_summary = self.calculate_signal_summary(data, daily_signal_data, fundamental_metrics)
         spike_times = self.get_spike_times(data) if self.show_volume.get() else pd.Index([])
         earnings_events = pd.DataFrame(columns=["date", "surprise", "label"])
         if self.show_earnings.get():
