@@ -8,9 +8,12 @@ from tkinter import ttk, messagebox
 from typing import Any
 
 import yfinance as yf
+import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.dates import date2num
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch, Patch
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 
@@ -171,8 +174,12 @@ class StockApp:
         self.show_fundamentals = tk.BooleanVar(value=bool(indicator_settings.get("show_fundamentals", False)))
         self.show_debug_fundamentals = tk.BooleanVar(value=bool(indicator_settings.get("show_debug_fundamentals", False)))
         self._fundamentals_cache: dict[str, dict[str, Any]] = {}
+        self._cursor_contexts: dict[Any, dict[str, Any]] = {}
+        self._cursor_active_ax: Any | None = None
 
         self._build_ui()
+        self.canvas.mpl_connect("motion_notify_event", self.on_chart_hover)
+        self.canvas.mpl_connect("figure_leave_event", self.hide_chart_cursor)
         if ticker:
             self.update_chart()
 
@@ -1743,6 +1750,252 @@ class StockApp:
         )
 
     @staticmethod
+    def plot_x_to_numeric(plot_x: pd.Index) -> np.ndarray:
+        if isinstance(plot_x, pd.RangeIndex):
+            return plot_x.to_numpy(dtype=float)
+
+        try:
+            return date2num(pd.to_datetime(plot_x).to_pydatetime())
+        except Exception:
+            return np.asarray(plot_x, dtype=float)
+
+    @staticmethod
+    def format_cursor_timestamp(value: Any) -> str:
+        try:
+            timestamp = pd.Timestamp(value)
+        except Exception:
+            return str(value)
+
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.tz_convert(None)
+
+        if timestamp.hour or timestamp.minute or timestamp.second:
+            return timestamp.strftime("%Y-%m-%d %H:%M")
+        return timestamp.strftime("%Y-%m-%d")
+
+    def format_cursor_value(self, column: str, value: Any) -> str:
+        if value is None or pd.isna(value):
+            return "N/A"
+
+        if column in {"Volume", "VOLUME_AVG30", "VOLUME_EMA20", "VOLUME_EMA50"}:
+            return self.format_compact_number(value)
+        if column == "RVOL":
+            return f"{value:.2f}x"
+
+        return f"{value:.2f}"
+
+    @staticmethod
+    def make_cursor_series(label: str, column: str, color: str) -> dict[str, str]:
+        return {
+            "label": label,
+            "column": column,
+            "color": color
+        }
+
+    def register_cursor_axis(
+        self,
+        ax: Any,
+        data: pd.DataFrame,
+        plot_x: pd.Index,
+        series: list[dict[str, str]]
+    ) -> None:
+        available_series = [
+            item
+            for item in series
+            if item["column"] in data
+        ]
+        if not available_series or data.empty:
+            return
+
+        x_numeric = self.plot_x_to_numeric(plot_x)
+        if len(x_numeric) == 0:
+            return
+
+        vline = ax.axvline(
+            x_numeric[0],
+            color="#111827",
+            linewidth=0.85,
+            linestyle="--",
+            alpha=0.58,
+            zorder=20,
+            visible=False
+        )
+        hline = Line2D(
+            [0, 1],
+            [np.nan, np.nan],
+            color="#111827",
+            linewidth=0.85,
+            linestyle="--",
+            alpha=0.46,
+            zorder=20,
+            transform=ax.get_yaxis_transform(),
+            visible=False
+        )
+        ax.add_line(hline)
+        markers = ax.scatter(
+            [],
+            [],
+            s=28,
+            edgecolors="white",
+            linewidths=0.75,
+            zorder=21,
+            visible=False
+        )
+        annotation = ax.annotate(
+            "",
+            xy=(0, 0),
+            xytext=(12, 12),
+            textcoords="offset points",
+            fontsize=7.3,
+            color="#111827",
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "facecolor": "white",
+                "edgecolor": "#94a3b8",
+                "alpha": 0.94
+            },
+            zorder=22,
+            visible=False
+        )
+        x_label = ax.text(
+            x_numeric[0],
+            -0.035,
+            "",
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="top",
+            fontsize=7,
+            color="#111827",
+            clip_on=False,
+            bbox={
+                "boxstyle": "round,pad=0.22",
+                "facecolor": "white",
+                "edgecolor": "#94a3b8",
+                "alpha": 0.94
+            },
+            zorder=22,
+            visible=False
+        )
+        y_label = ax.text(
+            1.004,
+            0,
+            "",
+            transform=ax.get_yaxis_transform(),
+            ha="left",
+            va="center",
+            fontsize=7,
+            color="#111827",
+            clip_on=False,
+            bbox={
+                "boxstyle": "round,pad=0.22",
+                "facecolor": "white",
+                "edgecolor": "#94a3b8",
+                "alpha": 0.94
+            },
+            zorder=22,
+            visible=False
+        )
+
+        cursor_artists = [vline, hline, markers, annotation, x_label, y_label]
+        for artist in cursor_artists:
+            try:
+                artist.set_in_layout(False)
+            except AttributeError:
+                pass
+
+        self._cursor_contexts[ax] = {
+            "ax": ax,
+            "data": data,
+            "plot_x": plot_x,
+            "x_numeric": x_numeric,
+            "series": available_series,
+            "artists": cursor_artists,
+            "vline": vline,
+            "hline": hline,
+            "markers": markers,
+            "annotation": annotation,
+            "x_label": x_label,
+            "y_label": y_label
+        }
+
+    def hide_chart_cursor(self, _event: Any | None = None) -> None:
+        changed = False
+        for context in self._cursor_contexts.values():
+            for artist in context["artists"]:
+                if artist.get_visible():
+                    artist.set_visible(False)
+                    changed = True
+
+        if changed:
+            self.canvas.draw_idle()
+        self._cursor_active_ax = None
+
+    def on_chart_hover(self, event: Any) -> None:
+        context = self._cursor_contexts.get(event.inaxes)
+        if context is None or event.xdata is None:
+            self.hide_chart_cursor()
+            return
+
+        x_numeric = context["x_numeric"]
+        if len(x_numeric) == 0:
+            self.hide_chart_cursor()
+            return
+
+        cursor_x = float(event.xdata)
+        point_index = int(np.nanargmin(np.abs(x_numeric - cursor_x)))
+        point_index = max(0, min(point_index, len(context["data"]) - 1))
+        row = context["data"].iloc[point_index]
+        snapped_x = context["x_numeric"][point_index]
+        timestamp = context["data"].index[point_index]
+
+        values = []
+        for item in context["series"]:
+            value = row.get(item["column"])
+            if value is None or pd.isna(value):
+                continue
+            values.append((item, value))
+
+        if not values:
+            self.hide_chart_cursor()
+            return
+
+        if event.ydata is None:
+            nearest_item, nearest_y = values[0]
+        else:
+            nearest_item, nearest_y = min(values, key=lambda item_value: abs(item_value[1] - event.ydata))
+
+        for ax, other_context in self._cursor_contexts.items():
+            if ax is event.inaxes:
+                continue
+            for artist in other_context["artists"]:
+                artist.set_visible(False)
+
+        context["vline"].set_xdata([snapped_x, snapped_x])
+        context["hline"].set_ydata([nearest_y, nearest_y])
+        context["markers"].set_offsets(np.asarray([[snapped_x, value] for _item, value in values], dtype=float))
+        context["markers"].set_facecolors([item["color"] for item, _value in values])
+        context["markers"].set_edgecolors(["white"] * len(values))
+
+        x_text = self.format_cursor_timestamp(timestamp)
+        tooltip_lines = [x_text]
+        tooltip_lines.extend(
+            f"{item['label']}: {self.format_cursor_value(item['column'], value)}"
+            for item, value in values
+        )
+        context["annotation"].xy = (snapped_x, nearest_y)
+        context["annotation"].set_text("\n".join(tooltip_lines))
+        context["x_label"].set_position((snapped_x, -0.035))
+        context["x_label"].set_text(x_text)
+        context["y_label"].set_position((1.004, nearest_y))
+        context["y_label"].set_text(self.format_cursor_value(nearest_item["column"], nearest_y))
+
+        for artist in context["artists"]:
+            artist.set_visible(True)
+
+        self._cursor_active_ax = event.inaxes
+        self.canvas.draw_idle()
+
+    @staticmethod
     def get_spike_times(data: pd.DataFrame) -> pd.Index:
         if "VOLUME_SPIKE" not in data:
             return pd.Index([])
@@ -2359,7 +2612,7 @@ class StockApp:
             framealpha=0.88
         )
 
-        return volume_ax
+        return rvol_ax
 
     @staticmethod
     def add_daily_structural_indicators(data: pd.DataFrame) -> pd.DataFrame:
@@ -2428,6 +2681,7 @@ class StockApp:
             return
 
         self.figure.clear()
+        self._cursor_contexts = {}
 
         extra_panels = (
             int(self.show_rsi.get())
@@ -2461,6 +2715,7 @@ class StockApp:
 
         compressed_x = self.uses_compressed_intraday_axis(self.interval_var.get())
         plot_x = self.get_plot_x(data, compressed_x)
+        selected_indicators = self.get_selected_indicators()
         debug_fundamentals = self.show_debug_fundamentals.get()
         fundamental_metrics = self.get_fundamentals(ticker, refresh=refresh_fundamentals, debug=debug_fundamentals) if show_fundamentals else {}
         if show_fundamentals and debug_fundamentals:
@@ -2478,13 +2733,38 @@ class StockApp:
             data,
             ticker,
             self.price_style_var.get(),
-            self.get_selected_indicators(),
+            selected_indicators,
             spike_times,
             earnings_events,
             plot_x,
             compressed_x
         )
         self.configure_x_axis(price_ax, data, compressed_x)
+        price_cursor_series = [
+            self.make_cursor_series("Close", "Close", "#2563eb")
+        ]
+        price_cursor_specs = [
+            ("EMA9", "EMA 9", "#f97316"),
+            ("EMA12", "EMA 12", "#a855f7"),
+            ("EMA20", "EMA 20", "#0ea5e9"),
+            ("EMA50", "EMA 50", "#16a34a"),
+            ("EMA200", "EMA 200", "#64748b"),
+            ("SMA20", "SMA 20", "#f59e0b"),
+            ("SMA50", "SMA 50", "#22c55e"),
+            ("SMA100", "SMA 100", "#14b8a6"),
+            ("SMA200", "SMA 200", "#475569")
+        ]
+        price_cursor_series.extend(
+            self.make_cursor_series(label, column, color)
+            for column, label, color in price_cursor_specs
+            if selected_indicators.get(column)
+        )
+        if selected_indicators.get("BOLLINGER"):
+            price_cursor_series.extend([
+                self.make_cursor_series("Bollinger Upper", "BB_UPPER", "#64748b"),
+                self.make_cursor_series("Bollinger Lower", "BB_LOWER", "#64748b")
+            ])
+        self.register_cursor_axis(price_ax, data, plot_x, price_cursor_series)
         self.add_signal_summary_box(summary_ax, signal_summary, card_bottom=0.03, card_height=0.94)
         if fundamentals_ax is not None:
             self.draw_fundamental_dashboard(fundamentals_ax, fundamental_metrics, card_bottom=0.03, card_height=0.94)
@@ -2500,6 +2780,12 @@ class StockApp:
             rsi_ax.grid(True, alpha=0.3)
             rsi_ax.legend(loc="upper left")
             self.configure_x_axis(rsi_ax, data, compressed_x)
+            self.register_cursor_axis(
+                rsi_ax,
+                data,
+                plot_x,
+                [self.make_cursor_series("RSI 14", "RSI", "#2563eb")]
+            )
             row += 1
 
         if self.show_macd.get():
@@ -2511,11 +2797,20 @@ class StockApp:
             macd_ax.grid(True, alpha=0.3)
             macd_ax.legend(loc="upper left")
             self.configure_x_axis(macd_ax, data, compressed_x)
+            self.register_cursor_axis(
+                macd_ax,
+                data,
+                plot_x,
+                [
+                    self.make_cursor_series("MACD", "MACD", "#2563eb"),
+                    self.make_cursor_series("Signal", "MACD_SIGNAL", "#f97316")
+                ]
+            )
             row += 1
 
         if self.show_volume.get():
             volume_ax = self.figure.add_subplot(chart_grid[row, 0], sharex=price_ax)
-            self.plot_volume_panel(
+            rvol_ax = self.plot_volume_panel(
                 volume_ax,
                 data,
                 price_ax,
@@ -2525,6 +2820,19 @@ class StockApp:
                 show_spike_shading=False
             )
             self.configure_x_axis(volume_ax, data, compressed_x)
+            volume_cursor_series = [
+                self.make_cursor_series("Volume", "Volume", "#64748b"),
+                self.make_cursor_series("Avg Vol", "VOLUME_AVG30", "#2563eb")
+            ]
+            if self.show_volume_ema50.get():
+                volume_cursor_series.append(self.make_cursor_series("Vol EMA 50", "VOLUME_EMA50", "#0891b2"))
+            self.register_cursor_axis(volume_ax, data, plot_x, volume_cursor_series)
+            self.register_cursor_axis(
+                rvol_ax,
+                data,
+                plot_x,
+                [self.make_cursor_series("RVOL", "RVOL", "#f97316")]
+            )
             row += 1
 
         if self.show_atr.get():
@@ -2534,6 +2842,12 @@ class StockApp:
             atr_ax.grid(True, alpha=0.3)
             atr_ax.legend(loc="upper left")
             self.configure_x_axis(atr_ax, data, compressed_x)
+            self.register_cursor_axis(
+                atr_ax,
+                data,
+                plot_x,
+                [self.make_cursor_series("ATR 14", "ATR14", "#2563eb")]
+            )
 
         self.canvas.draw()
         self.save_settings()
