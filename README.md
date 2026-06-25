@@ -125,7 +125,7 @@ It can also display these separate indicator panels:
 RSI 14
 MACD
 Volume
-30-Day Average Volume
+Volume SMA 20
 Volume EMA 50
 Relative Volume (RVOL)
 ATR 14

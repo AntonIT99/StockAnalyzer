@@ -20,6 +20,7 @@ from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 
 MAX_MOVING_AVERAGE_WINDOW = 200
+BULLISH_STRUCTURE_SCORE_MAX = 14
 DAILY_SIGNAL_PERIOD = "2y"
 CACHE_DIR = Path(__file__).with_name(".stock_cache")
 SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
@@ -122,6 +123,7 @@ INDICATOR_SETTINGS = [
     "show_rsi",
     "show_macd",
     "show_volume",
+    "show_volume_sma20",
     "show_volume_ema50",
     "show_atr",
     "show_earnings",
@@ -174,6 +176,7 @@ class StockApp:
         self.show_rsi = tk.BooleanVar(value=bool(indicator_settings.get("show_rsi", False)))
         self.show_macd = tk.BooleanVar(value=bool(indicator_settings.get("show_macd", False)))
         self.show_volume = tk.BooleanVar(value=bool(indicator_settings.get("show_volume", False)))
+        self.show_volume_sma20 = tk.BooleanVar(value=bool(indicator_settings.get("show_volume_sma20", True)))
         self.show_volume_ema50 = tk.BooleanVar(value=bool(indicator_settings.get("show_volume_ema50", True)))
         self.show_atr = tk.BooleanVar(value=bool(indicator_settings.get("show_atr", False)))
         self.show_earnings = tk.BooleanVar(value=bool(indicator_settings.get("show_earnings", False)))
@@ -311,6 +314,7 @@ class StockApp:
         ttk.Checkbutton(indicator_controls, text="RSI", variable=self.show_rsi, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="MACD", variable=self.show_macd, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="Volume", variable=self.show_volume, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(indicator_controls, text="Vol SMA20", variable=self.show_volume_sma20, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="Vol EMA50", variable=self.show_volume_ema50, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="ATR 14", variable=self.show_atr, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="Earnings", variable=self.show_earnings, command=self.save_settings).pack(side="left", padx=8)
@@ -1653,11 +1657,11 @@ class StockApp:
         if "Volume" not in data:
             return data
 
-        data["VOLUME_AVG30"] = data["Volume"].rolling(30).mean()
-        data["RVOL"] = data["Volume"] / data["VOLUME_AVG30"]
+        data["VOLUME_SMA20"] = data["Volume"].rolling(20).mean()
+        data["RVOL"] = data["Volume"] / data["VOLUME_SMA20"]
         data["VOLUME_EMA20"] = data["Volume"].ewm(span=20, adjust=False).mean()
         data["VOLUME_EMA50"] = data["Volume"].ewm(span=50, adjust=False).mean()
-        data["VOLUME_SPIKE"] = data["Volume"] > (2 * data["VOLUME_AVG30"])
+        data["VOLUME_SPIKE"] = data["Volume"] > (2 * data["VOLUME_SMA20"])
         return data
 
     @staticmethod
@@ -1797,18 +1801,22 @@ class StockApp:
         return state
 
     @staticmethod
-    def classify_trend_score(score: int | None) -> str:
+    def classify_bullish_structure_score(score: int | None, trend_score: int | None = None) -> str:
         if score is None:
             return "N/A"
-        if score >= 5:
+        if score >= 12:
             return "Strong Bullish"
-        if score == 4:
+        if score >= 9:
             return "Bullish"
-        if score == 3:
-            return "Neutral"
-        if score >= 1:
-            return "Bearish"
-        return "Strong Bearish"
+        if score >= 6:
+            return "Mixed"
+        if trend_score is not None and trend_score <= 1:
+            return "Strongly Bearish"
+        return "Bearish"
+
+    @staticmethod
+    def classify_trend_score(score: int | None) -> str:
+        return StockApp.classify_bullish_structure_score(score)
 
     @staticmethod
     def calculate_investment_view(business_health: str, valuation: str, trend: str) -> str:
@@ -1816,7 +1824,7 @@ class StockApp:
         value = str(valuation).lower()
         trend_text = str(trend).lower()
         trend_bullish = "bullish" in trend_text
-        trend_bearish = "bearish" in trend_text
+        trend_bearish = "bearish" in trend_text or "weak" in trend_text
 
         if business == "strong" and value == "cheap" and trend_bearish:
             return "Watchlist"
@@ -1827,7 +1835,28 @@ class StockApp:
         return "Watchlist"
 
     @staticmethod
-    def calculate_daily_trend_score(data: pd.DataFrame) -> int | None:
+    def calculate_bullish_structure_score(data: pd.DataFrame) -> dict[str, Any]:
+        empty_score = {
+            "score": None,
+            "max_score": BULLISH_STRUCTURE_SCORE_MAX,
+            "rating": "N/A",
+            "trend_score": None,
+            "momentum_score": None,
+            "quality_score": None,
+            "current_price": None,
+            "ema20": None,
+            "ema50": None,
+            "ema100": None,
+            "ema200": None,
+            "sma50": None,
+            "sma200": None,
+            "ema50_20_bars_ago": None,
+            "rsi14": None,
+            "macd": None,
+            "macd_signal": None,
+            "volume": None,
+            "volume_sma20": None
+        }
         current_price = StockApp.latest_valid_value(data.get("Close", pd.Series(dtype=float)))
         ema20 = StockApp.latest_valid_value(data.get("DAILY_EMA20", pd.Series(dtype=float)))
         ema50 = StockApp.latest_valid_value(data.get("DAILY_EMA50", pd.Series(dtype=float)))
@@ -1835,28 +1864,112 @@ class StockApp:
         ema200 = StockApp.latest_valid_value(data.get("DAILY_EMA200", pd.Series(dtype=float)))
         sma50 = StockApp.latest_valid_value(data.get("DAILY_SMA50", pd.Series(dtype=float)))
         sma200 = StockApp.latest_valid_value(data.get("DAILY_SMA200", pd.Series(dtype=float)))
-        required_values = [current_price, ema20, ema50, ema100, ema200, sma50, sma200]
+        ema50_20_bars_ago = None
+        ema50_values = data.get("DAILY_EMA50", pd.Series(dtype=float)).dropna()
+        if len(ema50_values) >= 21:
+            ema50_20_bars_ago = ema50_values.iloc[-21]
+
+        rsi14 = StockApp.latest_valid_value(data.get("DAILY_RSI14", pd.Series(dtype=float)))
+        macd = StockApp.latest_valid_value(data.get("DAILY_MACD", pd.Series(dtype=float)))
+        macd_signal = StockApp.latest_valid_value(data.get("DAILY_MACD_SIGNAL", pd.Series(dtype=float)))
+        volume = StockApp.latest_valid_value(data.get("Volume", pd.Series(dtype=float)))
+        volume_sma20 = StockApp.latest_valid_value(data.get("DAILY_VOLUME_SMA20", pd.Series(dtype=float)))
+
+        required_values = [
+            current_price,
+            ema20,
+            ema50,
+            ema100,
+            ema200,
+            sma50,
+            sma200,
+            ema50_20_bars_ago,
+            rsi14,
+            macd,
+            macd_signal,
+            volume,
+            volume_sma20
+        ]
         if not all(StockApp.is_valid_number(value) for value in required_values):
-            return None
+            return empty_score
 
-        trend_score = 0
-        if current_price > ema20:
-            trend_score += 1
-        if ema20 > ema50:
-            trend_score += 1
-        if ema50 > ema100:
-            trend_score += 1
-        if ema100 > ema200:
-            trend_score += 1
-        if sma50 > sma200:
-            trend_score += 1
+        trend_checks = [
+            current_price > ema20,
+            current_price > sma50,
+            current_price > sma200,
+            ema20 > ema50,
+            ema50 > ema100,
+            ema100 > ema200,
+            sma50 > sma200,
+            ema50 > ema50_20_bars_ago
+        ]
+        momentum_checks = [
+            rsi14 > 50,
+            macd > macd_signal,
+            macd > 0
+        ]
+        quality_checks = [
+            volume > volume_sma20,
+            current_price <= ema20 * 1.08,
+            current_price <= sma200 * 1.20
+        ]
+        trend_score = int(sum(trend_checks))
+        momentum_score = int(sum(momentum_checks))
+        quality_score = int(sum(quality_checks))
+        score = trend_score + momentum_score + quality_score
 
-        return trend_score
+        return {
+            "score": score,
+            "max_score": BULLISH_STRUCTURE_SCORE_MAX,
+            "rating": StockApp.classify_bullish_structure_score(score, trend_score=trend_score),
+            "trend_score": trend_score,
+            "momentum_score": momentum_score,
+            "quality_score": quality_score,
+            "current_price": current_price,
+            "ema20": ema20,
+            "ema50": ema50,
+            "ema100": ema100,
+            "ema200": ema200,
+            "sma50": sma50,
+            "sma200": sma200,
+            "ema50_20_bars_ago": ema50_20_bars_ago,
+            "rsi14": rsi14,
+            "macd": macd,
+            "macd_signal": macd_signal,
+            "volume": volume,
+            "volume_sma20": volume_sma20
+        }
 
     @staticmethod
-    def calculate_daily_structural_summary(data: pd.DataFrame | None, as_of: pd.Timestamp | None = None) -> dict[str, Any]:
+    def calculate_daily_trend_score(data: pd.DataFrame) -> int | None:
+        return StockApp.calculate_bullish_structure_score(data)["score"]
+
+    @staticmethod
+    def calculate_daily_structural_summary(
+        data: pd.DataFrame | None,
+        as_of: pd.Timestamp | None = None
+    ) -> dict[str, Any]:
         empty_summary = {
             "daily_trend_score": None,
+            "daily_trend_score_max": BULLISH_STRUCTURE_SCORE_MAX,
+            "daily_trend_score_trend": None,
+            "daily_trend_score_momentum": None,
+            "daily_trend_score_quality": None,
+            "distance_daily_ema20": None,
+            "daily_ema_stack": "N/A",
+            "daily_ema50_change_20": None,
+            "daily_ema50_trend": "N/A",
+            "daily_rsi14": None,
+            "daily_macd": None,
+            "daily_macd_signal": None,
+            "daily_macd_vs_signal": "N/A",
+            "daily_macd_zero": "N/A",
+            "distance_volume_sma20": None,
+            "volume_vs_sma20": "N/A",
+            "daily_ema20_extension": None,
+            "daily_ema20_extension_state": "N/A",
+            "daily_sma200_extension": None,
+            "daily_sma200_extension_state": "N/A",
             "daily_trend": "N/A",
             "daily_cross": "N/A",
             "price_vs_daily_sma50": "n/a",
@@ -1876,14 +1989,64 @@ class StockApp:
                 return empty_summary
 
         current_price = StockApp.latest_valid_value(data["Close"])
+        structure_score = StockApp.calculate_bullish_structure_score(data)
+        ema20 = structure_score["ema20"]
+        ema50 = structure_score["ema50"]
+        ema100 = structure_score["ema100"]
+        ema200 = structure_score["ema200"]
         sma50 = StockApp.latest_valid_value(data.get("DAILY_SMA50", pd.Series(dtype=float)))
         sma200 = StockApp.latest_valid_value(data.get("DAILY_SMA200", pd.Series(dtype=float)))
+        ema50_20_bars_ago = structure_score["ema50_20_bars_ago"]
+        rsi14 = structure_score["rsi14"]
+        macd = structure_score["macd"]
+        macd_signal = structure_score["macd_signal"]
+        volume = structure_score["volume"]
+        volume_sma20 = structure_score["volume_sma20"]
         high_52w, low_52w = StockApp.calculate_52w_levels(data)
-        trend_score = StockApp.calculate_daily_trend_score(data)
-        daily_trend = StockApp.classify_trend_score(trend_score)
+        trend_score = structure_score["score"]
+        if trend_score is None:
+            return empty_summary
+
+        daily_trend = structure_score["rating"]
+        ema_stack_bullish = (
+            StockApp.is_valid_number(ema20)
+            and StockApp.is_valid_number(ema50)
+            and StockApp.is_valid_number(ema100)
+            and StockApp.is_valid_number(ema200)
+            and ema20 > ema50 > ema100 > ema200
+        )
+        ema50_rising = (
+            StockApp.is_valid_number(ema50)
+            and StockApp.is_valid_number(ema50_20_bars_ago)
+            and ema50 > ema50_20_bars_ago
+        )
+        macd_above_signal = StockApp.is_valid_number(macd) and StockApp.is_valid_number(macd_signal) and macd > macd_signal
+        macd_above_zero = StockApp.is_valid_number(macd) and macd > 0
+        volume_above_sma20 = StockApp.is_valid_number(volume) and StockApp.is_valid_number(volume_sma20) and volume > volume_sma20
+        ema20_extension = StockApp.percentage_distance(current_price, ema20)
+        sma200_extension = StockApp.percentage_distance(current_price, sma200)
 
         return {
             "daily_trend_score": trend_score,
+            "daily_trend_score_max": structure_score["max_score"],
+            "daily_trend_score_trend": structure_score["trend_score"],
+            "daily_trend_score_momentum": structure_score["momentum_score"],
+            "daily_trend_score_quality": structure_score["quality_score"],
+            "distance_daily_ema20": StockApp.percentage_distance(current_price, ema20),
+            "daily_ema_stack": "Bullish" if ema_stack_bullish else "Mixed",
+            "daily_ema50_change_20": StockApp.percentage_distance(ema50, ema50_20_bars_ago),
+            "daily_ema50_trend": "Rising" if ema50_rising else "Falling",
+            "daily_rsi14": rsi14,
+            "daily_macd": macd,
+            "daily_macd_signal": macd_signal,
+            "daily_macd_vs_signal": "Above Signal" if macd_above_signal else "Below Signal",
+            "daily_macd_zero": "Above 0" if macd_above_zero else "Below 0",
+            "distance_volume_sma20": StockApp.percentage_distance(volume, volume_sma20),
+            "volume_vs_sma20": "Above" if volume_above_sma20 else "Below",
+            "daily_ema20_extension": ema20_extension,
+            "daily_ema20_extension_state": "OK" if StockApp.is_valid_number(ema20_extension) and ema20_extension <= 0.08 else "Extended",
+            "daily_sma200_extension": sma200_extension,
+            "daily_sma200_extension_state": "OK" if StockApp.is_valid_number(sma200_extension) and sma200_extension <= 0.20 else "Extended",
             "daily_trend": daily_trend,
             "daily_cross": StockApp.calculate_daily_cross(data),
             "price_vs_daily_sma50": StockApp.compare_price_to_level(current_price, sma50),
@@ -1909,8 +2072,11 @@ class StockApp:
         current_rvol = StockApp.latest_valid_value(data.get("RVOL", pd.Series(dtype=float)))
         current_atr = StockApp.latest_valid_value(data.get("ATR14", pd.Series(dtype=float)))
         volume_trend = StockApp.calculate_volume_trend(data)
-        daily_summary = StockApp.calculate_daily_structural_summary(daily_data, as_of=daily_summary_as_of)
         period_price_summary = StockApp.calculate_period_price_summary(data)
+        daily_summary = StockApp.calculate_daily_structural_summary(
+            daily_data,
+            as_of=daily_summary_as_of
+        )
 
         fundamentals = fundamentals or {}
         valuation = fundamentals.get("valuation_view", {}).get("value", "Unknown")
@@ -2013,7 +2179,7 @@ class StockApp:
         if value is None or pd.isna(value):
             return "N/A"
 
-        if column in {"Volume", "VOLUME_AVG30", "VOLUME_EMA20", "VOLUME_EMA50"}:
+        if column in {"Volume", "VOLUME_SMA20", "VOLUME_EMA20", "VOLUME_EMA50"}:
             return self.format_compact_number(value)
         if column == "RVOL":
             return f"{value:.2f}x"
@@ -2459,20 +2625,20 @@ class StockApp:
 
         def status_color(value: str) -> str:
             normalized = str(value).lower()
-            if normalized in {"above", "rising", "bullish", "strong bullish", "golden cross", "golden state", "cheap", "strong", "stable", "attractive"}:
+            if normalized in {"above", "rising", "bullish", "strong bullish", "golden cross", "golden state", "cheap", "strong", "stable", "attractive", "ok"}:
                 return "#16a34a"
-            if normalized in {"below", "falling", "bearish", "strong bearish", "death cross", "death state", "expensive", "weak", "risky"}:
+            if normalized in {"below", "falling", "bearish", "strong bearish", "strongly bearish", "weak / bearish", "death cross", "death state", "expensive", "weak", "risky", "extended"}:
                 return "#dc2626"
-            if normalized in {"neutral", "n/a", "none", "fair", "unknown", "watchlist"}:
+            if normalized in {"mixed", "neutral", "n/a", "none", "fair", "unknown", "watchlist"}:
                 return "#64748b"
             return "#0ea5e9"
 
         def trend_score_color(value: int) -> str:
             if value is None:
                 return "#64748b"
-            if value >= 4:
+            if value >= 9:
                 return "#16a34a"
-            if value <= 1:
+            if value <= 5:
                 return "#dc2626"
             return "#64748b"
 
@@ -2516,43 +2682,122 @@ class StockApp:
                 return "N/A"
             return f"{level_state} {self.format_summary_percent(distance)}"
 
+        def format_distance_state(distance: float | None, positive_label: str = "Above", negative_label: str = "Below") -> str:
+            if distance is None or pd.isna(distance):
+                return "N/A"
+            label = positive_label if distance >= 0 else negative_label
+            return f"{label} {self.format_summary_percent(distance)}"
+
+        def format_score_parts() -> str:
+            trend = summary.get("daily_trend_score_trend")
+            momentum = summary.get("daily_trend_score_momentum")
+            quality = summary.get("daily_trend_score_quality")
+            if trend is None or momentum is None or quality is None:
+                return "N/A"
+            return f"T {int(trend)}/8 | M {int(momentum)}/3 | Q {int(quality)}/3"
+
+        def format_ema_stack() -> str:
+            ema50_trend = summary.get("daily_ema50_trend", "N/A")
+            ema50_change = self.format_summary_percent(summary.get("daily_ema50_change_20"))
+            if ema50_change == "N/A":
+                return f"{summary.get('daily_ema_stack', 'N/A')} | {ema50_trend}"
+            return f"{summary.get('daily_ema_stack', 'N/A')} | {ema50_trend} {ema50_change}"
+
+        def format_rsi_macd() -> str:
+            rsi = summary.get("daily_rsi14")
+            rsi_text = "RSI N/A" if rsi is None or pd.isna(rsi) else f"RSI {rsi:.1f}"
+            macd_signal = summary.get("daily_macd_vs_signal", "N/A").replace(" Signal", " Sig")
+            macd_zero = summary.get("daily_macd_zero", "N/A").replace("Above 0", ">0").replace("Below 0", "<0")
+            return f"{rsi_text} | {macd_signal}, {macd_zero}"
+
+        def format_extension(state_key: str, distance_key: str) -> str:
+            state = summary.get(state_key, "N/A")
+            distance = self.format_summary_percent(summary.get(distance_key))
+            if distance == "N/A":
+                return state
+            return f"{state} {distance}"
+
+        def all_status_color(*values: str) -> str:
+            normalized_values = [str(value).lower() for value in values]
+            if all(value in {"above", "above signal", "above 0", "bullish", "rising", "ok"} for value in normalized_values):
+                return "#16a34a"
+            if any(value in {"below", "below signal", "below 0", "falling", "extended"} for value in normalized_values):
+                return "#dc2626"
+            return "#64748b"
+
         trend_score = summary.get("daily_trend_score")
         trend_label = summary.get("daily_trend", StockApp.classify_trend_score(trend_score))
-        trend_score_text = "N/A" if trend_score is None else f"{int(trend_score)}/5 {trend_label}"
-        rows = [
-            ("End/Current Price", format_price(summary.get("period_end_price", current_price)), "#111827"),
-            ("Start Price", format_price(summary.get("period_start_price")), "#111827"),
-            ("Period Change", self.format_summary_percent(summary.get("period_change")), distance_color(summary.get("period_change"))),
-            ("Average Price", format_price(summary.get("period_average_price")), "#111827"),
-            ("End vs Average", self.format_summary_percent(summary.get("period_end_vs_average")), distance_color(summary.get("period_end_vs_average"))),
-            ("", "", "#111827"),
-            ("Daily Trend Score", trend_score_text, trend_score_color(trend_score)),
-            ("Daily Cross", summary.get("daily_cross", "N/A"), status_color(summary.get("daily_cross", "N/A"))),
+        trend_score_max = summary.get("daily_trend_score_max", BULLISH_STRUCTURE_SCORE_MAX)
+        trend_score_text = "N/A" if trend_score is None else f"{int(trend_score)}/{trend_score_max} {trend_label}"
+        sections = [
             (
-                "vs Daily SMA50",
-                format_level_distance(summary.get("price_vs_daily_sma50", "n/a"), summary.get("distance_daily_sma50")),
-                distance_color(summary.get("distance_daily_sma50"))
+                "Period",
+                [
+                    ("End/Current Price", format_price(summary.get("period_end_price", current_price)), "#111827", False),
+                    ("Start Price", format_price(summary.get("period_start_price")), "#111827", False),
+                    ("Period Change", self.format_summary_percent(summary.get("period_change")), distance_color(summary.get("period_change")), True),
+                    ("Average Price", format_price(summary.get("period_average_price")), "#111827", False),
+                    ("End vs Average", self.format_summary_percent(summary.get("period_end_vs_average")), distance_color(summary.get("period_end_vs_average")), True)
+                ]
             ),
             (
-                "vs Daily SMA200",
-                format_level_distance(summary.get("price_vs_daily_sma200", "n/a"), summary.get("distance_daily_sma200")),
-                distance_color(summary.get("distance_daily_sma200"))
+                "Bullish Structure",
+                [
+                    ("Score", trend_score_text, trend_score_color(trend_score), True),
+                    ("Score Parts", format_score_parts(), trend_score_color(trend_score), False),
+                    ("Rating", trend_label.upper(), status_color(trend_label), True)
+                ]
             ),
-            ("From Daily 52W High", self.format_summary_percent(summary.get("distance_52w_high")), from_52w_high_color(summary.get("distance_52w_high"))),
-            ("From Daily 52W Low", self.format_summary_percent(summary.get("distance_52w_low")), from_52w_low_color(summary.get("distance_52w_low"))),
-            ("", "", "#111827"),
-            ("Volume Trend", summary.get("volume_trend", "Neutral"), status_color(summary.get("volume_trend", "Neutral"))),
-            ("RVOL", rvol_text, rvol_color(current_rvol)),
-            ("ATR 14", atr_text, "#111827"),
-            ("Valuation", summary.get("valuation", "Unknown"), status_color(summary.get("valuation", "Unknown"))),
-            ("Business", summary.get("business_health", "Unknown"), status_color(summary.get("business_health", "Unknown"))),
-            ("Investment View", summary.get("investment_view", "Watchlist"), status_color(summary.get("investment_view", "Watchlist"))),
-            ("", "", "#111827"),
-            ("Daily Trend", trend_label.upper(), status_color(trend_label))
+            (
+                "Trend",
+                [
+                    ("vs Daily EMA20", format_distance_state(summary.get("distance_daily_ema20")), distance_color(summary.get("distance_daily_ema20")), True),
+                    ("vs Daily SMA50", format_level_distance(summary.get("price_vs_daily_sma50", "n/a"), summary.get("distance_daily_sma50")), distance_color(summary.get("distance_daily_sma50")), True),
+                    ("vs Daily SMA200", format_level_distance(summary.get("price_vs_daily_sma200", "n/a"), summary.get("distance_daily_sma200")), distance_color(summary.get("distance_daily_sma200")), True),
+                    ("EMA Stack / EMA50", format_ema_stack(), all_status_color(summary.get("daily_ema_stack", "N/A"), summary.get("daily_ema50_trend", "N/A")), False),
+                    ("Daily Cross", summary.get("daily_cross", "N/A"), status_color(summary.get("daily_cross", "N/A")), False)
+                ]
+            ),
+            (
+                "Momentum",
+                [
+                    (
+                        "RSI / MACD",
+                        format_rsi_macd(),
+                        all_status_color(
+                            "Above" if StockApp.is_valid_number(summary.get("daily_rsi14")) and summary.get("daily_rsi14") > 50 else "Below",
+                            summary.get("daily_macd_vs_signal", "N/A"),
+                            summary.get("daily_macd_zero", "N/A")
+                        ),
+                        False
+                    )
+                ]
+            ),
+            (
+                "Volume & Risk",
+                [
+                    ("Volume Trend", summary.get("volume_trend", "Neutral"), status_color(summary.get("volume_trend", "Neutral")), True),
+                    ("Volume vs SMA20", format_level_distance(summary.get("volume_vs_sma20", "N/A"), summary.get("distance_volume_sma20")), distance_color(summary.get("distance_volume_sma20")), True),
+                    ("RVOL", rvol_text, rvol_color(current_rvol), False),
+                    ("ATR 14", atr_text, "#111827", False),
+                    ("EMA20 Extension", format_extension("daily_ema20_extension_state", "daily_ema20_extension"), status_color(summary.get("daily_ema20_extension_state", "N/A")), False),
+                    ("SMA200 Extension", format_extension("daily_sma200_extension_state", "daily_sma200_extension"), status_color(summary.get("daily_sma200_extension_state", "N/A")), False)
+                ]
+            ),
+            (
+                "Context",
+                [
+                    ("From Daily 52W High", self.format_summary_percent(summary.get("distance_52w_high")), from_52w_high_color(summary.get("distance_52w_high")), False),
+                    ("From Daily 52W Low", self.format_summary_percent(summary.get("distance_52w_low")), from_52w_low_color(summary.get("distance_52w_low")), False),
+                    ("Valuation", summary.get("valuation", "Unknown"), status_color(summary.get("valuation", "Unknown")), False),
+                    ("Business", summary.get("business_health", "Unknown"), status_color(summary.get("business_health", "Unknown")), False),
+                    ("Investment View", summary.get("investment_view", "Watchlist"), status_color(summary.get("investment_view", "Watchlist")), False)
+                ]
+            )
         ]
 
-        card_left = 0.04
-        card_width = 0.92
+        card_left = 0.03
+        card_width = 0.94
         card_right = card_left + card_width
         card_top = card_bottom + card_height
 
@@ -2571,54 +2816,86 @@ class StockApp:
         ax.add_patch(card)
 
         ax.text(
-            card_left + 0.018,
-            card_top - 0.035,
+            card_left + 0.016,
+            card_top - 0.030,
             "Signal Summary",
             transform=ax.transAxes,
             ha="left",
             va="top",
-            fontsize=8.3,
+            fontsize=9.6,
             fontweight="bold",
             color="#111827",
             zorder=7
         )
 
-        row_y = card_top - 0.092
-        row_units = sum(0.35 if not label else 1 for label, _value, _color in rows)
-        max_row_step = 0.046 if card_height > 0.80 else 0.038
-        row_step = min(max_row_step, (card_height - 0.125) / max(row_units, 1))
-        font_size = 6.3 if card_height > 0.80 else 5.9
-        if row_step < 0.037:
-            font_size = 5.8
-        for label, value, color in rows:
-            if not label:
-                row_y -= row_step * 0.35
-                continue
+        total_rows = sum(len(rows) for _section, rows in sections)
+        total_sections = len(sections)
+        row_step = min(0.029, (card_height - 0.112) / max(total_rows + (total_sections * 0.98), 1))
+        row_step = max(row_step, 0.016)
+        title_rule_gap = row_step * 0.68
+        after_rule_gap = row_step * 0.20
+        section_gap = row_step * 0.22
+        section_font_size = 7.7 if row_step >= 0.019 else 7.1
+        row_font_size = 6.5 if row_step >= 0.019 else 6.0
+
+        row_y = card_top - 0.064
+        for section, section_rows in sections:
+            if row_y < card_bottom + 0.014:
+                return
 
             ax.text(
-                card_left + 0.018,
+                card_left + 0.016,
                 row_y,
-                label,
+                section,
                 transform=ax.transAxes,
                 ha="left",
                 va="top",
-                fontsize=font_size,
+                fontsize=section_font_size,
+                fontweight="bold",
                 color="#111827",
                 zorder=7
             )
-            ax.text(
-                card_right - 0.018,
-                row_y,
-                str(value).upper() if label.startswith("vs ") or label in {"Volume Trend", "Trend"} else str(value),
+            ax.plot(
+                [card_left + 0.016, card_right - 0.016],
+                [row_y - title_rule_gap, row_y - title_rule_gap],
                 transform=ax.transAxes,
-                ha="right",
-                va="top",
-                fontsize=font_size,
-                fontweight="bold" if label in {"Volume Trend", "Trend", "Daily Trend"} or label.startswith("vs ") else "normal",
-                color=color,
-                zorder=7
+                color="#e5e7eb",
+                linewidth=0.6,
+                zorder=6
             )
-            row_y -= row_step
+            row_y -= title_rule_gap + after_rule_gap
+
+            for label, value, color, bold_value in section_rows:
+                if row_y < card_bottom + 0.012:
+                    return
+
+                value_text = str(value).upper() if label.startswith("vs ") or label in {"Volume Trend"} else str(value)
+                ax.text(
+                    card_left + 0.016,
+                    row_y,
+                    label,
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=row_font_size,
+                    color="#374151",
+                    zorder=7
+                )
+                ax.text(
+                    card_right - 0.016,
+                    row_y,
+                    value_text,
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="top",
+                    fontsize=row_font_size,
+                    fontweight="bold" if bold_value else "normal",
+                    color=color,
+                    zorder=7
+                )
+                row_y -= row_step
+
+            row_y -= section_gap
 
     def draw_fundamental_dashboard(self, ax: Any, metrics: dict[str, dict[str, Any]], card_bottom: float = 0.03, card_height: float = 0.58) -> None:
         ax.set_axis_off()
@@ -2782,6 +3059,7 @@ class StockApp:
         price_ax: Any,
         plot_x: pd.Index,
         compressed_x: bool,
+        show_volume_sma20: bool = True,
         show_volume_ema50: bool = True,
         show_spike_shading: bool = False
     ) -> Any:
@@ -2800,13 +3078,14 @@ class StockApp:
             alpha=0.55,
             edgecolor="none"
         )
-        volume_ax.plot(
-            plot_x,
-            data["VOLUME_AVG30"],
-            label="30-Day Avg Volume",
-            linewidth=2.2,
-            color="#2563eb"
-        )
+        if show_volume_sma20:
+            volume_ax.plot(
+                plot_x,
+                data["VOLUME_SMA20"],
+                label="Volume SMA 20",
+                linewidth=2.2,
+                color="#2563eb"
+            )
         if show_volume_ema50:
             volume_ax.plot(
                 plot_x,
@@ -2867,14 +3146,14 @@ class StockApp:
         self.draw_spike_lines(volume_ax, spike_times, data.index, compressed_x)
 
         latest_volume = self.latest_valid_value(data["Volume"])
-        latest_avg_volume = self.latest_valid_value(data["VOLUME_AVG30"])
+        latest_sma20_volume = self.latest_valid_value(data["VOLUME_SMA20"])
         latest_rvol = self.latest_valid_value(data["RVOL"])
         volume_trend = self.calculate_volume_trend(data)
 
         rvol_text = f"{latest_rvol:.2f}x" if latest_rvol is not None else "n/a"
         volume_title = (
             f"Volume | Current {self.format_compact_number(latest_volume)}"
-            f" | Avg30 {self.format_compact_number(latest_avg_volume)}"
+            f" | SMA20 {self.format_compact_number(latest_sma20_volume)}"
             f" | RVOL {rvol_text}"
             f" | Trend {volume_trend}"
         )
@@ -2927,6 +3206,22 @@ class StockApp:
 
         for window in (20, 50, 100, 200):
             data[f"DAILY_SMA{window}"] = data["Close"].rolling(window).mean()
+
+        delta = data["Close"].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        rs = avg_gain / avg_loss
+        data["DAILY_RSI14"] = 100 - (100 / (1 + rs))
+
+        ema12 = data["Close"].ewm(span=12, adjust=False).mean()
+        ema26 = data["Close"].ewm(span=26, adjust=False).mean()
+        data["DAILY_MACD"] = ema12 - ema26
+        data["DAILY_MACD_SIGNAL"] = data["DAILY_MACD"].ewm(span=9, adjust=False).mean()
+
+        if "Volume" in data:
+            data["DAILY_VOLUME_SMA20"] = data["Volume"].rolling(20).mean()
 
         return data
 
@@ -3009,14 +3304,8 @@ class StockApp:
         )
         price_ax = self.figure.add_subplot(chart_grid[0, 0])
         if show_fundamentals:
-            right_grid = chart_grid[:, 1].subgridspec(
-                2,
-                1,
-                height_ratios=[0.28, 0.72],
-                hspace=0.08
-            )
-            summary_ax = self.figure.add_subplot(right_grid[0, 0])
-            fundamentals_ax = self.figure.add_subplot(right_grid[1, 0])
+            summary_ax = None
+            fundamentals_ax = self.figure.add_subplot(chart_grid[:, 1])
         else:
             summary_ax = self.figure.add_subplot(chart_grid[:, 1])
             fundamentals_ax = None
@@ -3078,7 +3367,8 @@ class StockApp:
                 self.make_cursor_series("Bollinger Lower", "BB_LOWER", "#64748b")
             ])
         self.register_cursor_axis(price_ax, data, plot_x, price_cursor_series)
-        self.add_signal_summary_box(summary_ax, signal_summary, card_bottom=0.03, card_height=0.94)
+        if summary_ax is not None:
+            self.add_signal_summary_box(summary_ax, signal_summary, card_bottom=0.03, card_height=0.94)
         if fundamentals_ax is not None:
             self.draw_fundamental_dashboard(fundamentals_ax, fundamental_metrics, card_bottom=0.03, card_height=0.94)
 
@@ -3129,14 +3419,16 @@ class StockApp:
                 price_ax,
                 plot_x,
                 compressed_x,
+                show_volume_sma20=self.show_volume_sma20.get(),
                 show_volume_ema50=self.show_volume_ema50.get(),
                 show_spike_shading=False
             )
             self.configure_x_axis(volume_ax, data, compressed_x)
             volume_cursor_series = [
-                self.make_cursor_series("Volume", "Volume", "#64748b"),
-                self.make_cursor_series("Avg Vol", "VOLUME_AVG30", "#2563eb")
+                self.make_cursor_series("Volume", "Volume", "#64748b")
             ]
+            if self.show_volume_sma20.get():
+                volume_cursor_series.append(self.make_cursor_series("Vol SMA 20", "VOLUME_SMA20", "#2563eb"))
             if self.show_volume_ema50.get():
                 volume_cursor_series.append(self.make_cursor_series("Vol EMA 50", "VOLUME_EMA50", "#0891b2"))
             self.register_cursor_axis(volume_ax, data, plot_x, volume_cursor_series)
