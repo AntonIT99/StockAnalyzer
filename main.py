@@ -114,6 +114,7 @@ INDICATOR_SETTINGS = [
     "show_ema12",
     "show_ema20",
     "show_ema50",
+    "show_ema100",
     "show_ema200",
     "show_sma20",
     "show_sma50",
@@ -167,6 +168,7 @@ class StockApp:
         self.show_ema12 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema12", False)))
         self.show_ema20 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema20", False)))
         self.show_ema50 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema50", False)))
+        self.show_ema100 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema100", False)))
         self.show_ema200 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema200", False)))
         self.show_sma20 = tk.BooleanVar(value=bool(indicator_settings.get("show_sma20", False)))
         self.show_sma50 = tk.BooleanVar(value=bool(indicator_settings.get("show_sma50", False)))
@@ -305,6 +307,7 @@ class StockApp:
         ttk.Checkbutton(indicator_controls, text="EMA 12", variable=self.show_ema12, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="EMA 20", variable=self.show_ema20, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="EMA 50", variable=self.show_ema50, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(indicator_controls, text="EMA 100", variable=self.show_ema100, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="EMA 200", variable=self.show_ema200, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="SMA 20", variable=self.show_sma20, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="SMA 50", variable=self.show_sma50, command=self.save_settings).pack(side="left", padx=8)
@@ -2481,6 +2484,7 @@ class StockApp:
             "EMA12": self.show_ema12.get(),
             "EMA20": self.show_ema20.get(),
             "EMA50": self.show_ema50.get(),
+            "EMA100": self.show_ema100.get(),
             "EMA200": self.show_ema200.get(),
             "SMA20": self.show_sma20.get(),
             "SMA50": self.show_sma50.get(),
@@ -2511,6 +2515,7 @@ class StockApp:
             ("EMA12", "EMA 12"),
             ("EMA20", "EMA 20"),
             ("EMA50", "EMA 50"),
+            ("EMA100", "EMA 100"),
             ("EMA200", "EMA 200"),
             ("SMA20", "SMA 20"),
             ("SMA50", "SMA 50"),
@@ -2696,19 +2701,15 @@ class StockApp:
                 return "N/A"
             return f"T {int(trend)}/8 | M {int(momentum)}/3 | Q {int(quality)}/3"
 
-        def format_ema_stack() -> str:
-            ema50_trend = summary.get("daily_ema50_trend", "N/A")
+        def format_ema50_trend() -> str:
             ema50_change = self.format_summary_percent(summary.get("daily_ema50_change_20"))
             if ema50_change == "N/A":
-                return f"{summary.get('daily_ema_stack', 'N/A')} | {ema50_trend}"
-            return f"{summary.get('daily_ema_stack', 'N/A')} | {ema50_trend} {ema50_change}"
+                return summary.get("daily_ema50_trend", "N/A")
+            return f"{summary.get('daily_ema50_trend', 'N/A')} {ema50_change}"
 
-        def format_rsi_macd() -> str:
+        def format_rsi14() -> str:
             rsi = summary.get("daily_rsi14")
-            rsi_text = "RSI N/A" if rsi is None or pd.isna(rsi) else f"RSI {rsi:.1f}"
-            macd_signal = summary.get("daily_macd_vs_signal", "N/A").replace(" Signal", " Sig")
-            macd_zero = summary.get("daily_macd_zero", "N/A").replace("Above 0", ">0").replace("Below 0", "<0")
-            return f"{rsi_text} | {macd_signal}, {macd_zero}"
+            return "N/A" if rsi is None or pd.isna(rsi) else f"{rsi:.1f}"
 
         def format_extension(state_key: str, distance_key: str) -> str:
             state = summary.get(state_key, "N/A")
@@ -2754,7 +2755,8 @@ class StockApp:
                     ("vs Daily EMA20", format_distance_state(summary.get("distance_daily_ema20")), distance_color(summary.get("distance_daily_ema20")), True),
                     ("vs Daily SMA50", format_level_distance(summary.get("price_vs_daily_sma50", "n/a"), summary.get("distance_daily_sma50")), distance_color(summary.get("distance_daily_sma50")), True),
                     ("vs Daily SMA200", format_level_distance(summary.get("price_vs_daily_sma200", "n/a"), summary.get("distance_daily_sma200")), distance_color(summary.get("distance_daily_sma200")), True),
-                    ("EMA Stack / EMA50", format_ema_stack(), all_status_color(summary.get("daily_ema_stack", "N/A"), summary.get("daily_ema50_trend", "N/A")), False),
+                    ("EMA Stack", summary.get("daily_ema_stack", "N/A"), status_color(summary.get("daily_ema_stack", "N/A")), False),
+                    ("EMA50 Trend", format_ema50_trend(), status_color(summary.get("daily_ema50_trend", "N/A")), False),
                     ("Daily Cross", summary.get("daily_cross", "N/A"), status_color(summary.get("daily_cross", "N/A")), False)
                 ]
             ),
@@ -2762,13 +2764,21 @@ class StockApp:
                 "Momentum",
                 [
                     (
-                        "RSI / MACD",
-                        format_rsi_macd(),
-                        all_status_color(
-                            "Above" if StockApp.is_valid_number(summary.get("daily_rsi14")) and summary.get("daily_rsi14") > 50 else "Below",
-                            summary.get("daily_macd_vs_signal", "N/A"),
-                            summary.get("daily_macd_zero", "N/A")
-                        ),
+                        "RSI14",
+                        format_rsi14(),
+                        status_color("Above" if StockApp.is_valid_number(summary.get("daily_rsi14")) and summary.get("daily_rsi14") > 50 else "Below"),
+                        False
+                    ),
+                    (
+                        "MACD vs Signal",
+                        summary.get("daily_macd_vs_signal", "N/A"),
+                        status_color(summary.get("daily_macd_vs_signal", "N/A")),
+                        False
+                    ),
+                    (
+                        "MACD vs 0",
+                        summary.get("daily_macd_zero", "N/A"),
+                        status_color(summary.get("daily_macd_zero", "N/A")),
                         False
                     )
                 ]
@@ -3231,6 +3241,7 @@ class StockApp:
         data["EMA12"] = data["Close"].ewm(span=12, adjust=False).mean()
         data["EMA20"] = data["Close"].ewm(span=20, adjust=False).mean()
         data["EMA50"] = data["Close"].ewm(span=50, adjust=False).mean()
+        data["EMA100"] = data["Close"].ewm(span=100, adjust=False).mean()
         data["EMA200"] = data["Close"].ewm(span=200, adjust=False).mean()
         data["SMA20"] = data["Close"].rolling(20).mean()
         data["SMA50"] = data["Close"].rolling(50).mean()
@@ -3350,6 +3361,7 @@ class StockApp:
             ("EMA12", "EMA 12", "#a855f7"),
             ("EMA20", "EMA 20", "#0ea5e9"),
             ("EMA50", "EMA 50", "#16a34a"),
+            ("EMA100", "EMA 100", "#14b8a6"),
             ("EMA200", "EMA 200", "#64748b"),
             ("SMA20", "SMA 20", "#f59e0b"),
             ("SMA50", "SMA 50", "#22c55e"),
