@@ -23,9 +23,10 @@ MAX_MOVING_AVERAGE_WINDOW = 200
 DAILY_SIGNAL_PERIOD = "2y"
 CACHE_DIR = Path(__file__).with_name(".stock_cache")
 SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
+CUSTOM_PERIOD = "Custom"
 INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h"}
 COMPRESSED_INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
-PERIOD_OPTIONS = ["1h", "1d", "5d", "15d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", "max"]
+PERIOD_OPTIONS = ["1h", "1d", "5d", "15d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", CUSTOM_PERIOD, "max"]
 INTERVAL_OPTIONS = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "5d", "1wk", "1mo", "3mo", "6mo", "1y"]
 PERIOD_DURATIONS = {
     "1h": pd.Timedelta(hours=1),
@@ -143,14 +144,18 @@ class StockApp:
         if period not in PERIOD_OPTIONS:
             period = "6mo"
 
-        interval = settings.get("interval", "1d")
-        allowed_intervals = self.get_allowed_intervals(period)
-        if interval not in allowed_intervals:
-            interval = allowed_intervals[0]
+        today = pd.Timestamp.now().normalize()
+        default_custom_start = (today - pd.DateOffset(months=6)).strftime("%Y-%m-%d")
+        default_custom_end = today.strftime("%Y-%m-%d")
 
         self.ticker_var = tk.StringVar(value=ticker)
         self.period_var = tk.StringVar(value=period)
-        self.interval_var = tk.StringVar(value=interval)
+        self.custom_start_var = tk.StringVar(value=settings.get("custom_start", default_custom_start))
+        self.custom_end_var = tk.StringVar(value=settings.get("custom_end", default_custom_end))
+        self.interval_var = tk.StringVar(value=settings.get("interval", "1d"))
+        allowed_intervals = self.get_allowed_intervals_for_current_period()
+        if self.interval_var.get() not in allowed_intervals:
+            self.interval_var.set(allowed_intervals[0])
         self.price_style_var = tk.StringVar(value=settings.get("price_style", "Line"))
         if self.price_style_var.get() not in {"Line", "Candlesticks"}:
             self.price_style_var.set("Line")
@@ -207,6 +212,8 @@ class StockApp:
         settings = {
             "ticker": self.ticker_var.get().strip().upper(),
             "period": self.period_var.get(),
+            "custom_start": self.custom_start_var.get().strip(),
+            "custom_end": self.custom_end_var.get().strip(),
             "interval": self.interval_var.get(),
             "price_style": self.price_style_var.get(),
             "indicators": {
@@ -251,9 +258,22 @@ class StockApp:
             state="readonly"
         )
         period_combobox.pack(side="left", padx=5)
-        period_combobox.bind("<<ComboboxSelected>>", lambda _event: self.update_interval_options(persist=True))
+        period_combobox.bind("<<ComboboxSelected>>", lambda _event: self.on_period_changed())
 
-        ttk.Label(top_controls, text="Interval:").pack(side="left", padx=(15, 0))
+        self.custom_range_frame = ttk.Frame(top_controls)
+        ttk.Label(self.custom_range_frame, text="Start:").pack(side="left")
+        custom_start_entry = ttk.Entry(self.custom_range_frame, textvariable=self.custom_start_var, width=11)
+        custom_start_entry.pack(side="left", padx=(4, 8))
+        custom_start_entry.bind("<Return>", lambda _event: self.on_custom_range_changed())
+        custom_start_entry.bind("<FocusOut>", lambda _event: self.on_custom_range_changed())
+        ttk.Label(self.custom_range_frame, text="End:").pack(side="left")
+        custom_end_entry = ttk.Entry(self.custom_range_frame, textvariable=self.custom_end_var, width=11)
+        custom_end_entry.pack(side="left", padx=(4, 0))
+        custom_end_entry.bind("<Return>", lambda _event: self.on_custom_range_changed())
+        custom_end_entry.bind("<FocusOut>", lambda _event: self.on_custom_range_changed())
+
+        self.interval_label = ttk.Label(top_controls, text="Interval:")
+        self.interval_label.pack(side="left", padx=(15, 0))
         self.interval_combobox = ttk.Combobox(
             top_controls,
             textvariable=self.interval_var,
@@ -261,6 +281,7 @@ class StockApp:
             state="readonly"
         )
         self.interval_combobox.pack(side="left", padx=5)
+        self.toggle_custom_date_controls()
         self.update_interval_options()
         self.interval_combobox.bind("<<ComboboxSelected>>", lambda _event: self.save_settings())
 
@@ -300,8 +321,22 @@ class StockApp:
         self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
+    def on_period_changed(self):
+        self.toggle_custom_date_controls()
+        self.update_interval_options(persist=True)
+
+    def on_custom_range_changed(self):
+        self.update_interval_options(persist=True)
+
+    def toggle_custom_date_controls(self):
+        if self.period_var.get() == CUSTOM_PERIOD:
+            if not self.custom_range_frame.winfo_ismapped():
+                self.custom_range_frame.pack(side="left", padx=(4, 0), before=self.interval_label)
+        else:
+            self.custom_range_frame.pack_forget()
+
     def update_interval_options(self, persist=False):
-        allowed_intervals = self.get_allowed_intervals(self.period_var.get())
+        allowed_intervals = self.get_allowed_intervals_for_current_period()
         self.interval_combobox["values"] = allowed_intervals
 
         if self.interval_var.get() not in allowed_intervals:
@@ -310,9 +345,29 @@ class StockApp:
         if persist:
             self.save_settings()
 
+    def get_allowed_intervals_for_current_period(self):
+        allowed_intervals = self.get_allowed_intervals(
+            self.get_interval_rule_period(),
+            self.get_interval_rule_period_duration()
+        )
+        if self.period_var.get() != CUSTOM_PERIOD:
+            return allowed_intervals
+
+        try:
+            visible_start, _visible_end = self.get_custom_visible_window()
+        except ValueError:
+            return allowed_intervals
+
+        return [
+            interval
+            for interval in allowed_intervals
+            if self.is_interval_within_yfinance_lookback(interval, visible_start)
+        ]
+
     @staticmethod
-    def get_allowed_intervals(period):
-        period_duration = PERIOD_DURATIONS.get(period)
+    def get_allowed_intervals(period, period_duration=None):
+        if period_duration is None:
+            period_duration = PERIOD_DURATIONS.get(period)
         return [
             interval
             for interval in INTERVAL_OPTIONS
@@ -331,11 +386,40 @@ class StockApp:
 
         return max_lookback is None or period_duration < max_lookback
 
+    @staticmethod
+    def is_interval_within_yfinance_lookback(interval, visible_start):
+        max_lookback = INTERVAL_MAX_LOOKBACKS[interval]
+        if max_lookback is None:
+            return True
+
+        oldest_allowed_start = pd.Timestamp.now() - max_lookback
+        return visible_start >= oldest_allowed_start
+
+    def get_interval_rule_period(self):
+        if self.period_var.get() != CUSTOM_PERIOD:
+            return self.period_var.get()
+
+        custom_duration = self.get_custom_period_duration(default_period="6mo")
+        return self.get_smallest_covering_standard_period(custom_duration)
+
+    def get_interval_rule_period_duration(self):
+        return PERIOD_DURATIONS.get(self.get_interval_rule_period())
+
+    @staticmethod
+    def get_smallest_covering_standard_period(period_duration):
+        for period in PERIOD_OPTIONS:
+            standard_duration = PERIOD_DURATIONS.get(period)
+            if standard_duration is not None and period_duration <= standard_duration:
+                return period
+        return "max"
+
     def download_data(self):
         ticker = self.get_ticker()
-        visible_start = self.get_visible_start()
+        visible_start, visible_end = self.get_visible_window()
         interval = self.interval_var.get()
         download_interval = self.get_download_interval(interval)
+        interval_rule_period = self.get_interval_rule_period()
+        interval_rule_duration = PERIOD_DURATIONS.get(interval_rule_period)
 
         download_kwargs = {
             "interval": download_interval,
@@ -344,18 +428,23 @@ class StockApp:
         }
 
         if visible_start is None:
-            self.validate_period_interval(visible_start, interval)
+            self.validate_period_interval(visible_start, interval, interval_rule_period, interval_rule_duration)
             download_kwargs["period"] = self.period_var.get()
+        elif self.period_var.get() == CUSTOM_PERIOD:
+            self.validate_period_interval(visible_start, interval, interval_rule_period, interval_rule_duration)
+            download_kwargs["start"] = self.get_download_start(visible_start, interval)
+            download_kwargs["end"] = visible_end
         else:
-            self.validate_period_interval(visible_start, interval)
-            intraday_period = self.get_intraday_download_period(interval, self.period_var.get())
+            self.validate_period_interval(visible_start, interval, interval_rule_period, interval_rule_duration)
+            intraday_period = self.get_intraday_download_period(interval, interval_rule_period)
             if intraday_period is None:
                 download_kwargs["start"] = self.get_download_start(visible_start, interval)
                 download_kwargs["end"] = pd.Timestamp.now().normalize() + pd.Timedelta(days=1)
             else:
                 download_kwargs["period"] = intraday_period
 
-        cache_key = self.build_cache_key(ticker, self.period_var.get(), interval, download_interval)
+        cache_period = self.get_cache_period_key(visible_start, visible_end)
+        cache_key = self.build_cache_key(ticker, cache_period, interval, download_interval)
         data = self.load_cached_data(cache_key, interval)
 
         if data is None:
@@ -378,20 +467,34 @@ class StockApp:
         if interval in RESAMPLE_RULES:
             data = self.resample_ohlcv(data, RESAMPLE_RULES[interval])
 
-        return data.dropna(), visible_start
+        return data.dropna(), visible_start, visible_end
 
-    def download_daily_signal_data(self, ticker: str) -> pd.DataFrame:
-        cache_key = self.build_cache_key(ticker, DAILY_SIGNAL_PERIOD, "daily-structural", "1d")
+    def download_daily_signal_data(self, ticker: str, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
+        download_kwargs = {
+            "interval": "1d",
+            "auto_adjust": True,
+            "progress": False
+        }
+        if as_of is None:
+            cache_period = DAILY_SIGNAL_PERIOD
+            download_kwargs["period"] = DAILY_SIGNAL_PERIOD
+        else:
+            as_of = pd.Timestamp(as_of).normalize()
+            if as_of.tzinfo is not None:
+                as_of = as_of.tz_convert(None)
+            start = as_of - pd.DateOffset(years=2)
+            cache_period = f"daily-structural:{start.strftime('%Y-%m-%d')}:{as_of.strftime('%Y-%m-%d')}"
+            download_kwargs["start"] = start
+            download_kwargs["end"] = as_of
+
+        cache_key = self.build_cache_key(ticker, cache_period, "daily-structural", "1d")
         data = self.load_cached_data(cache_key, "1d")
 
         if data is None:
             try:
                 data = yf.download(
                     ticker,
-                    period=DAILY_SIGNAL_PERIOD,
-                    interval="1d",
-                    auto_adjust=True,
-                    progress=False
+                    **download_kwargs
                 )
             except Exception:
                 return pd.DataFrame()
@@ -503,6 +606,63 @@ class StockApp:
 
         return end - offset
 
+    def get_visible_window(self):
+        if self.period_var.get() == CUSTOM_PERIOD:
+            return self.get_custom_visible_window()
+
+        return self.get_visible_start(), None
+
+    def get_custom_visible_window(self):
+        start = self.parse_date_entry(self.custom_start_var.get(), "start date")
+        end = self.parse_date_entry(self.custom_end_var.get(), "end date")
+        visible_end = end + pd.Timedelta(days=1)
+
+        if visible_end <= start:
+            raise ValueError("Custom end date must be on or after the start date.")
+
+        if start > pd.Timestamp.now().normalize():
+            raise ValueError("Custom start date cannot be in the future.")
+
+        return start, visible_end
+
+    def get_custom_period_duration(self, default_period=None):
+        try:
+            start, end = self.get_custom_visible_window()
+            return end - start
+        except ValueError:
+            if default_period is None:
+                raise
+            return PERIOD_DURATIONS[default_period]
+
+    @staticmethod
+    def parse_date_entry(value, label):
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"Enter a custom {label} in YYYY-MM-DD format.")
+
+        try:
+            parsed = pd.Timestamp(text)
+        except Exception as exc:
+            raise ValueError(f"Enter a valid custom {label} in YYYY-MM-DD format.") from exc
+
+        if pd.isna(parsed):
+            raise ValueError(f"Enter a valid custom {label} in YYYY-MM-DD format.")
+
+        if parsed.tzinfo is not None:
+            parsed = parsed.tz_convert(None)
+
+        return parsed.normalize()
+
+    def get_cache_period_key(self, visible_start, visible_end):
+        if self.period_var.get() != CUSTOM_PERIOD:
+            return self.period_var.get()
+
+        return (
+            f"{CUSTOM_PERIOD}:"
+            f"{visible_start.strftime('%Y-%m-%d')}:"
+            f"{(visible_end - pd.Timedelta(days=1)).strftime('%Y-%m-%d')}"
+        )
+
     @staticmethod
     def get_download_interval(interval):
         try:
@@ -543,9 +703,15 @@ class StockApp:
 
         return period
 
-    def validate_period_interval(self, visible_start, interval):
-        if interval not in self.get_allowed_intervals(self.period_var.get()):
-            raise ValueError(f"Use an interval less than or equal to the selected period: {self.period_var.get()}.")
+    def validate_period_interval(self, visible_start, interval, interval_rule_period=None, interval_rule_duration=None):
+        interval_rule_period = interval_rule_period or self.get_interval_rule_period()
+        interval_rule_duration = (
+            PERIOD_DURATIONS.get(interval_rule_period)
+            if interval_rule_duration is None
+            else interval_rule_duration
+        )
+        if interval not in self.get_allowed_intervals(interval_rule_period, interval_rule_duration):
+            raise ValueError(f"Use an interval less than or equal to the selected period: {interval_rule_period}.")
 
         max_lookback = INTERVAL_MAX_LOOKBACKS[interval]
         if max_lookback is None:
@@ -1522,6 +1688,38 @@ class StockApp:
         return (value - reference) / reference
 
     @staticmethod
+    def calculate_period_price_summary(data: pd.DataFrame) -> dict[str, float | None]:
+        if data.empty or "Close" not in data:
+            return {
+                "period_start_price": None,
+                "period_end_price": None,
+                "period_average_price": None,
+                "period_change": None,
+                "period_end_vs_average": None
+            }
+
+        closes = data["Close"].dropna()
+        if closes.empty:
+            return {
+                "period_start_price": None,
+                "period_end_price": None,
+                "period_average_price": None,
+                "period_change": None,
+                "period_end_vs_average": None
+            }
+
+        start_price = closes.iloc[0]
+        end_price = closes.iloc[-1]
+        average_price = closes.mean()
+        return {
+            "period_start_price": start_price,
+            "period_end_price": end_price,
+            "period_average_price": average_price,
+            "period_change": StockApp.percentage_distance(end_price, start_price),
+            "period_end_vs_average": StockApp.percentage_distance(end_price, average_price)
+        }
+
+    @staticmethod
     def format_summary_percent(value: float | None) -> str:
         if value is None or pd.isna(value):
             return "N/A"
@@ -1656,7 +1854,7 @@ class StockApp:
         return trend_score
 
     @staticmethod
-    def calculate_daily_structural_summary(data: pd.DataFrame | None) -> dict[str, Any]:
+    def calculate_daily_structural_summary(data: pd.DataFrame | None, as_of: pd.Timestamp | None = None) -> dict[str, Any]:
         empty_summary = {
             "daily_trend_score": None,
             "daily_trend": "N/A",
@@ -1670,6 +1868,12 @@ class StockApp:
         }
         if data is None or data.empty or "Close" not in data:
             return empty_summary
+
+        if as_of is not None:
+            as_of = StockApp.align_timestamp_to_index(as_of, data.index)
+            data = data.loc[data.index < as_of]
+            if data.empty:
+                return empty_summary
 
         current_price = StockApp.latest_valid_value(data["Close"])
         sma50 = StockApp.latest_valid_value(data.get("DAILY_SMA50", pd.Series(dtype=float)))
@@ -1694,7 +1898,8 @@ class StockApp:
     def calculate_signal_summary(
         data: pd.DataFrame,
         daily_data: pd.DataFrame | None = None,
-        fundamentals: dict[str, dict[str, Any]] | None = None
+        fundamentals: dict[str, dict[str, Any]] | None = None,
+        daily_summary_as_of: pd.Timestamp | None = None
     ) -> dict[str, Any]:
         if fundamentals is None and isinstance(daily_data, dict):
             fundamentals = daily_data
@@ -1704,7 +1909,8 @@ class StockApp:
         current_rvol = StockApp.latest_valid_value(data.get("RVOL", pd.Series(dtype=float)))
         current_atr = StockApp.latest_valid_value(data.get("ATR14", pd.Series(dtype=float)))
         volume_trend = StockApp.calculate_volume_trend(data)
-        daily_summary = StockApp.calculate_daily_structural_summary(daily_data)
+        daily_summary = StockApp.calculate_daily_structural_summary(daily_data, as_of=daily_summary_as_of)
+        period_price_summary = StockApp.calculate_period_price_summary(data)
 
         fundamentals = fundamentals or {}
         valuation = fundamentals.get("valuation_view", {}).get("value", "Unknown")
@@ -1714,6 +1920,7 @@ class StockApp:
 
         return {
             "current_price": current_price,
+            **period_price_summary,
             **daily_summary,
             "trend_score": daily_summary["daily_trend_score"],
             "overall_trend": daily_trend,
@@ -2242,9 +2449,13 @@ class StockApp:
         current_price = summary.get("current_price")
         current_rvol = summary.get("current_rvol")
         atr14 = summary.get("atr14")
-        price_text = f"{current_price:.2f}" if current_price is not None and not pd.isna(current_price) else "n/a"
         rvol_text = f"{current_rvol:.2f}x" if current_rvol is not None and not pd.isna(current_rvol) else "n/a"
         atr_text = f"{atr14:.2f}" if atr14 is not None and not pd.isna(atr14) else "n/a"
+
+        def format_price(value: float | None) -> str:
+            if value is None or pd.isna(value):
+                return "n/a"
+            return f"{value:.2f}"
 
         def status_color(value: str) -> str:
             normalized = str(value).lower()
@@ -2309,7 +2520,12 @@ class StockApp:
         trend_label = summary.get("daily_trend", StockApp.classify_trend_score(trend_score))
         trend_score_text = "N/A" if trend_score is None else f"{int(trend_score)}/5 {trend_label}"
         rows = [
-            ("Price", price_text, "#111827"),
+            ("End/Current Price", format_price(summary.get("period_end_price", current_price)), "#111827"),
+            ("Start Price", format_price(summary.get("period_start_price")), "#111827"),
+            ("Period Change", self.format_summary_percent(summary.get("period_change")), distance_color(summary.get("period_change"))),
+            ("Average Price", format_price(summary.get("period_average_price")), "#111827"),
+            ("End vs Average", self.format_summary_percent(summary.get("period_end_vs_average")), distance_color(summary.get("period_end_vs_average"))),
+            ("", "", "#111827"),
             ("Daily Trend Score", trend_score_text, trend_score_color(trend_score)),
             ("Daily Cross", summary.get("daily_cross", "N/A"), status_color(summary.get("daily_cross", "N/A"))),
             (
@@ -2368,8 +2584,12 @@ class StockApp:
         )
 
         row_y = card_top - 0.092
-        row_step = 0.046 if card_height > 0.80 else 0.038
-        font_size = 6.7 if card_height > 0.80 else 5.9
+        row_units = sum(0.35 if not label else 1 for label, _value, _color in rows)
+        max_row_step = 0.046 if card_height > 0.80 else 0.038
+        row_step = min(max_row_step, (card_height - 0.125) / max(row_units, 1))
+        font_size = 6.3 if card_height > 0.80 else 5.9
+        if row_step < 0.037:
+            font_size = 5.8
         for label, value, color in rows:
             if not label:
                 row_y -= row_step * 0.35
@@ -2754,11 +2974,14 @@ class StockApp:
     def update_chart(self, refresh_fundamentals: bool = False):
         try:
             ticker = self.get_ticker()
-            data, visible_start = self.download_data()
+            data, visible_start, visible_end = self.download_data()
             data = self.add_indicators(data)
             if visible_start is not None:
                 visible_start = self.align_timestamp_to_index(visible_start, data.index)
                 data = data.loc[data.index >= visible_start]
+            if visible_end is not None:
+                visible_end = self.align_timestamp_to_index(visible_end, data.index)
+                data = data.loc[data.index < visible_end]
             if data.empty:
                 raise ValueError("No data remains after applying the selected display period.")
         except Exception as e:
@@ -2805,8 +3028,13 @@ class StockApp:
         fundamental_metrics = self.get_fundamentals(ticker, refresh=refresh_fundamentals, debug=debug_fundamentals) if show_fundamentals else {}
         if show_fundamentals and debug_fundamentals:
             self.print_fundamentals_debug(fundamental_metrics)
-        daily_signal_data = self.download_daily_signal_data(ticker)
-        signal_summary = self.calculate_signal_summary(data, daily_signal_data, fundamental_metrics)
+        daily_signal_data = self.download_daily_signal_data(ticker, as_of=visible_end)
+        signal_summary = self.calculate_signal_summary(
+            data,
+            daily_signal_data,
+            fundamental_metrics,
+            daily_summary_as_of=visible_end
+        )
         spike_times = self.get_spike_times(data) if self.show_volume.get() else pd.Index([])
         earnings_events = pd.DataFrame(columns=["date", "surprise", "label"])
         if self.show_earnings.get():

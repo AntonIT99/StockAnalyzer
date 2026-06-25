@@ -38,6 +38,7 @@ Available periods:
 4y
 5y
 10y
+Custom
 max
 ```
 
@@ -60,6 +61,8 @@ Available intervals:
 ```
 
 The `6mo` and `1y` intervals are calculated by downloading daily data and resampling it into larger bars.
+
+Choose `Custom` to enter explicit start and end dates. The interval dropdown then uses the rules for the smallest standard period that covers the custom range.
 
 The interval dropdown only shows intervals that are valid for the selected period. Yahoo Finance limits `1m` data to roughly 8 days per request, so `1m` is only shown for short periods.
 
