@@ -21,6 +21,10 @@ from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 MAX_MOVING_AVERAGE_WINDOW = 200
 BULLISH_STRUCTURE_SCORE_MAX = 14
+CONFIRMATION_SCORE_MAX = 3
+EXTENDED_BULLISH_SCORE_MAX = BULLISH_STRUCTURE_SCORE_MAX + CONFIRMATION_SCORE_MAX
+ATR_PCT_HEALTHY_MIN = 0.01
+ATR_PCT_HEALTHY_MAX = 0.06
 DAILY_SIGNAL_PERIOD = "2y"
 CACHE_DIR = Path(__file__).with_name(".stock_cache")
 SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
@@ -1661,7 +1665,8 @@ class StockApp:
             return data
 
         data["VOLUME_SMA20"] = data["Volume"].rolling(20).mean()
-        data["RVOL"] = data["Volume"] / data["VOLUME_SMA20"]
+        data["RVOL20"] = data["Volume"] / data["VOLUME_SMA20"]
+        data["RVOL"] = data["RVOL20"]
         data["VOLUME_EMA20"] = data["Volume"].ewm(span=20, adjust=False).mean()
         data["VOLUME_EMA50"] = data["Volume"].ewm(span=50, adjust=False).mean()
         data["VOLUME_SPIKE"] = data["Volume"] > (2 * data["VOLUME_SMA20"])
@@ -1822,6 +1827,20 @@ class StockApp:
         return StockApp.classify_bullish_structure_score(score)
 
     @staticmethod
+    def classify_extended_bullish_score(score: int | None, trend_score: int | None = None) -> str:
+        if score is None:
+            return "N/A"
+        if score >= 15:
+            return "Strong Bullish Confirmed"
+        if score >= 12:
+            return "Bullish Confirmed"
+        if score >= 8:
+            return "Mixed"
+        if trend_score is not None and trend_score <= 1:
+            return "Strongly Bearish"
+        return "Bearish"
+
+    @staticmethod
     def calculate_investment_view(business_health: str, valuation: str, trend: str) -> str:
         business = str(business_health).lower()
         value = str(valuation).lower()
@@ -1846,6 +1865,11 @@ class StockApp:
             "trend_score": None,
             "momentum_score": None,
             "quality_score": None,
+            "confirmation_score": None,
+            "confirmation_max": CONFIRMATION_SCORE_MAX,
+            "extended_total_score": None,
+            "extended_max_score": EXTENDED_BULLISH_SCORE_MAX,
+            "extended_rating": "N/A",
             "current_price": None,
             "ema20": None,
             "ema50": None,
@@ -1858,7 +1882,10 @@ class StockApp:
             "macd": None,
             "macd_signal": None,
             "volume": None,
-            "volume_sma20": None
+            "volume_sma20": None,
+            "rvol20": None,
+            "atr14": None,
+            "atr_pct": None
         }
         current_price = StockApp.latest_valid_value(data.get("Close", pd.Series(dtype=float)))
         ema20 = StockApp.latest_valid_value(data.get("DAILY_EMA20", pd.Series(dtype=float)))
@@ -1877,6 +1904,9 @@ class StockApp:
         macd_signal = StockApp.latest_valid_value(data.get("DAILY_MACD_SIGNAL", pd.Series(dtype=float)))
         volume = StockApp.latest_valid_value(data.get("Volume", pd.Series(dtype=float)))
         volume_sma20 = StockApp.latest_valid_value(data.get("DAILY_VOLUME_SMA20", pd.Series(dtype=float)))
+        rvol20 = StockApp.latest_valid_value(data.get("DAILY_RVOL20", pd.Series(dtype=float)))
+        atr14 = StockApp.latest_valid_value(data.get("DAILY_ATR14", pd.Series(dtype=float)))
+        atr_pct = StockApp.latest_valid_value(data.get("DAILY_ATR_PCT", pd.Series(dtype=float)))
 
         required_values = [
             current_price,
@@ -1920,6 +1950,20 @@ class StockApp:
         momentum_score = int(sum(momentum_checks))
         quality_score = int(sum(quality_checks))
         score = trend_score + momentum_score + quality_score
+        confirmation_values = [rvol20, atr_pct]
+        if all(StockApp.is_valid_number(value) for value in confirmation_values):
+            confirmation_checks = [
+                rvol20 > 1.1 and current_price > ema20,
+                volume > volume_sma20,
+                ATR_PCT_HEALTHY_MIN <= atr_pct <= ATR_PCT_HEALTHY_MAX
+            ]
+            confirmation_score = int(sum(confirmation_checks))
+            extended_total_score = score + confirmation_score
+            extended_rating = StockApp.classify_extended_bullish_score(extended_total_score, trend_score=trend_score)
+        else:
+            confirmation_score = None
+            extended_total_score = None
+            extended_rating = "N/A"
 
         return {
             "score": score,
@@ -1928,6 +1972,11 @@ class StockApp:
             "trend_score": trend_score,
             "momentum_score": momentum_score,
             "quality_score": quality_score,
+            "confirmation_score": confirmation_score,
+            "confirmation_max": CONFIRMATION_SCORE_MAX,
+            "extended_total_score": extended_total_score,
+            "extended_max_score": EXTENDED_BULLISH_SCORE_MAX,
+            "extended_rating": extended_rating,
             "current_price": current_price,
             "ema20": ema20,
             "ema50": ema50,
@@ -1940,7 +1989,10 @@ class StockApp:
             "macd": macd,
             "macd_signal": macd_signal,
             "volume": volume,
-            "volume_sma20": volume_sma20
+            "volume_sma20": volume_sma20,
+            "rvol20": rvol20,
+            "atr14": atr14,
+            "atr_pct": atr_pct
         }
 
     @staticmethod
@@ -1958,6 +2010,11 @@ class StockApp:
             "daily_trend_score_trend": None,
             "daily_trend_score_momentum": None,
             "daily_trend_score_quality": None,
+            "confirmation_score": None,
+            "confirmation_max": CONFIRMATION_SCORE_MAX,
+            "extended_total_score": None,
+            "extended_max_score": EXTENDED_BULLISH_SCORE_MAX,
+            "extended_rating": "N/A",
             "distance_daily_ema20": None,
             "daily_ema_stack": "N/A",
             "daily_ema50_change_20": None,
@@ -1967,6 +2024,9 @@ class StockApp:
             "daily_macd_signal": None,
             "daily_macd_vs_signal": "N/A",
             "daily_macd_zero": "N/A",
+            "daily_rvol20": None,
+            "daily_atr_pct": None,
+            "daily_atr_pct_state": "N/A",
             "distance_volume_sma20": None,
             "volume_vs_sma20": "N/A",
             "daily_ema20_extension": None,
@@ -2005,6 +2065,8 @@ class StockApp:
         macd_signal = structure_score["macd_signal"]
         volume = structure_score["volume"]
         volume_sma20 = structure_score["volume_sma20"]
+        rvol20 = structure_score["rvol20"]
+        atr_pct = structure_score["atr_pct"]
         high_52w, low_52w = StockApp.calculate_52w_levels(data)
         trend_score = structure_score["score"]
         if trend_score is None:
@@ -2035,6 +2097,11 @@ class StockApp:
             "daily_trend_score_trend": structure_score["trend_score"],
             "daily_trend_score_momentum": structure_score["momentum_score"],
             "daily_trend_score_quality": structure_score["quality_score"],
+            "confirmation_score": structure_score["confirmation_score"],
+            "confirmation_max": structure_score["confirmation_max"],
+            "extended_total_score": structure_score["extended_total_score"],
+            "extended_max_score": structure_score["extended_max_score"],
+            "extended_rating": structure_score["extended_rating"],
             "distance_daily_ema20": StockApp.percentage_distance(current_price, ema20),
             "daily_ema_stack": "Bullish" if ema_stack_bullish else "Mixed",
             "daily_ema50_change_20": StockApp.percentage_distance(ema50, ema50_20_bars_ago),
@@ -2044,6 +2111,9 @@ class StockApp:
             "daily_macd_signal": macd_signal,
             "daily_macd_vs_signal": "Above Signal" if macd_above_signal else "Below Signal",
             "daily_macd_zero": "Above 0" if macd_above_zero else "Below 0",
+            "daily_rvol20": rvol20,
+            "daily_atr_pct": atr_pct,
+            "daily_atr_pct_state": "Healthy" if StockApp.is_valid_number(atr_pct) and ATR_PCT_HEALTHY_MIN <= atr_pct <= ATR_PCT_HEALTHY_MAX else "Outside Range",
             "distance_volume_sma20": StockApp.percentage_distance(volume, volume_sma20),
             "volume_vs_sma20": "Above" if volume_above_sma20 else "Below",
             "daily_ema20_extension": ema20_extension,
@@ -2630,9 +2700,9 @@ class StockApp:
 
         def status_color(value: str) -> str:
             normalized = str(value).lower()
-            if normalized in {"above", "rising", "bullish", "strong bullish", "golden cross", "golden state", "cheap", "strong", "stable", "attractive", "ok"}:
+            if normalized in {"above", "above signal", "above 0", "rising", "bullish", "strong bullish", "bullish confirmed", "strong bullish confirmed", "golden cross", "golden state", "cheap", "strong", "stable", "attractive", "ok", "healthy"}:
                 return "#16a34a"
-            if normalized in {"below", "falling", "bearish", "strong bearish", "strongly bearish", "weak / bearish", "death cross", "death state", "expensive", "weak", "risky", "extended"}:
+            if normalized in {"below", "below signal", "below 0", "falling", "bearish", "strong bearish", "strongly bearish", "weak / bearish", "death cross", "death state", "expensive", "weak", "risky", "extended", "outside range"}:
                 return "#dc2626"
             if normalized in {"mixed", "neutral", "n/a", "none", "fair", "unknown", "watchlist"}:
                 return "#64748b"
@@ -2644,6 +2714,15 @@ class StockApp:
             if value >= 9:
                 return "#16a34a"
             if value <= 5:
+                return "#dc2626"
+            return "#64748b"
+
+        def confirmation_score_color(value: int) -> str:
+            if value is None:
+                return "#64748b"
+            if value >= 3:
+                return "#16a34a"
+            if value <= 1:
                 return "#dc2626"
             return "#64748b"
 
@@ -2693,13 +2772,11 @@ class StockApp:
             label = positive_label if distance >= 0 else negative_label
             return f"{label} {self.format_summary_percent(distance)}"
 
-        def format_score_parts() -> str:
-            trend = summary.get("daily_trend_score_trend")
-            momentum = summary.get("daily_trend_score_momentum")
-            quality = summary.get("daily_trend_score_quality")
-            if trend is None or momentum is None or quality is None:
+        def format_score_part(key: str, max_score: int) -> str:
+            value = summary.get(key)
+            if value is None:
                 return "N/A"
-            return f"T {int(trend)}/8 | M {int(momentum)}/3 | Q {int(quality)}/3"
+            return f"{int(value)}/{max_score}"
 
         def format_ema50_trend() -> str:
             ema50_change = self.format_summary_percent(summary.get("daily_ema50_change_20"))
@@ -2730,6 +2807,19 @@ class StockApp:
         trend_label = summary.get("daily_trend", StockApp.classify_trend_score(trend_score))
         trend_score_max = summary.get("daily_trend_score_max", BULLISH_STRUCTURE_SCORE_MAX)
         trend_score_text = "N/A" if trend_score is None else f"{int(trend_score)}/{trend_score_max} {trend_label}"
+        confirmation_score = summary.get("confirmation_score")
+        confirmation_max = summary.get("confirmation_max", CONFIRMATION_SCORE_MAX)
+        confirmation_score_text = "N/A" if confirmation_score is None else f"{int(confirmation_score)}/{confirmation_max}"
+        extended_total_score = summary.get("extended_total_score")
+        extended_max_score = summary.get("extended_max_score", EXTENDED_BULLISH_SCORE_MAX)
+        extended_rating = summary.get("extended_rating", "N/A")
+        extended_total_text = "N/A"
+        if extended_total_score is not None:
+            extended_total_text = f"{int(extended_total_score)}/{extended_max_score}"
+            if extended_rating != "N/A":
+                extended_total_text = f"{extended_total_text} {extended_rating}"
+        rvol20 = summary.get("daily_rvol20")
+        rvol20_text = "N/A" if rvol20 is None or pd.isna(rvol20) else f"{rvol20:.2f}x"
         sections = [
             (
                 "Period",
@@ -2744,9 +2834,12 @@ class StockApp:
             (
                 "Bullish Structure",
                 [
-                    ("Score", trend_score_text, trend_score_color(trend_score), True),
-                    ("Score Parts", format_score_parts(), trend_score_color(trend_score), False),
-                    ("Rating", trend_label.upper(), status_color(trend_label), True)
+                    ("Bullish Structure", trend_score_text, trend_score_color(trend_score), True),
+                    ("Confirmation", confirmation_score_text, confirmation_score_color(confirmation_score), True),
+                    ("Extended Total", extended_total_text, status_color(extended_rating), True),
+                    ("Trend", format_score_part("daily_trend_score_trend", 8), "#111827", False),
+                    ("Momentum", format_score_part("daily_trend_score_momentum", 3), "#111827", False),
+                    ("Quality", format_score_part("daily_trend_score_quality", 3), "#111827", False)
                 ]
             ),
             (
@@ -2788,6 +2881,8 @@ class StockApp:
                 [
                     ("Volume Trend", summary.get("volume_trend", "Neutral"), status_color(summary.get("volume_trend", "Neutral")), True),
                     ("Volume vs SMA20", format_level_distance(summary.get("volume_vs_sma20", "N/A"), summary.get("distance_volume_sma20")), distance_color(summary.get("distance_volume_sma20")), True),
+                    ("RVOL20", rvol20_text, rvol_color(rvol20), False),
+                    ("ATR% Range", summary.get("daily_atr_pct_state", "N/A"), status_color(summary.get("daily_atr_pct_state", "N/A")), False),
                     ("RVOL", rvol_text, rvol_color(current_rvol), False),
                     ("ATR 14", atr_text, "#111827", False),
                     ("EMA20 Extension", format_extension("daily_ema20_extension_state", "daily_ema20_extension"), status_color(summary.get("daily_ema20_extension_state", "N/A")), False),
@@ -3232,6 +3327,15 @@ class StockApp:
 
         if "Volume" in data:
             data["DAILY_VOLUME_SMA20"] = data["Volume"].rolling(20).mean()
+            data["DAILY_RVOL20"] = data["Volume"] / data["DAILY_VOLUME_SMA20"]
+
+        if {"High", "Low", "Close"}.issubset(data.columns):
+            high_low = data["High"] - data["Low"]
+            high_close = (data["High"] - data["Close"].shift()).abs()
+            low_close = (data["Low"] - data["Close"].shift()).abs()
+            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            data["DAILY_ATR14"] = true_range.rolling(14).mean()
+            data["DAILY_ATR_PCT"] = data["DAILY_ATR14"] / data["Close"]
 
         return data
 
@@ -3269,6 +3373,7 @@ class StockApp:
         low_close = (data["Low"] - data["Close"].shift()).abs()
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         data["ATR14"] = true_range.rolling(14).mean()
+        data["ATR_PCT"] = data["ATR14"] / data["Close"]
 
         ema12 = data["Close"].ewm(span=12, adjust=False).mean()
         ema26 = data["Close"].ewm(span=26, adjust=False).mean()
