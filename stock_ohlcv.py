@@ -52,5 +52,6 @@ def get_bar_width(index):
     if deltas.empty:
         return 0.8
 
-    median_delta = deltas.median()
-    return max(median_delta / pd.Timedelta(days=1) * 0.8, 0.0005)
+    median_delta = pd.Timedelta(deltas.median())
+    median_days = median_delta.total_seconds() / pd.Timedelta(days=1).total_seconds()
+    return max(median_days * 0.8, 0.0005)

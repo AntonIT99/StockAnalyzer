@@ -47,6 +47,7 @@ from stock_time import (
 )
 
 
+# noinspection PyTypeChecker,PyPandasTruthValueIsAmbiguousInspection,PyShadowingNamesInspection,PyUnusedLocalInspection,PyUnresolvedReferencesInspection,PyUnboundLocalVariableInspection,PyBroadExceptionInspection
 class StockApp:
     get_host_timezone = staticmethod(get_host_timezone)
     host_now = staticmethod(host_now)
