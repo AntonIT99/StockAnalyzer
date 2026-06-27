@@ -47,7 +47,7 @@ from stock_time import (
 )
 
 
-# noinspection PyTypeChecker,PyPandasTruthValueIsAmbiguousInspection,PyShadowingNamesInspection,PyUnusedLocalInspection,PyUnresolvedReferencesInspection,PyUnboundLocalVariableInspection,PyBroadExceptionInspection
+# noinspection PyTypeChecker,PyPandasTruthValueIsAmbiguous,PyShadowingNames,PyUnusedLocal,PyUnresolvedReferences,PyUnboundLocalVariable,PyBroadException
 class StockApp:
     get_host_timezone = staticmethod(get_host_timezone)
     host_now = staticmethod(host_now)
@@ -138,7 +138,7 @@ class StockApp:
         try:
             with SETTINGS_PATH.open("r", encoding="utf-8") as settings_file:
                 settings = json.load(settings_file)
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return {}
 
         if not isinstance(settings, dict):
@@ -164,7 +164,7 @@ class StockApp:
             with SETTINGS_PATH.open("w", encoding="utf-8") as settings_file:
                 json.dump(settings, settings_file, indent=2)
                 settings_file.write("\n")
-        except Exception:
+        except OSError:
             pass
 
     def on_close(self):
@@ -449,11 +449,12 @@ class StockApp:
 
             for column in ohlcv_columns:
                 value = row[column]
-                if value is not None and not pd.isna(value):
+                if not StockApp.is_missing_value(value):
                     combined.loc[date, column] = value
 
         return combined.sort_index()
 
+    # noinspection PyBroadException
     def download_recent_intraday_for_daily_fallback(self, ticker: str) -> pd.DataFrame:
         cache_key = self.build_cache_key(ticker, "daily-latest-fallback-v2:10d", "daily-latest-fallback", "1h")
         data = self.load_cached_data(cache_key, "1h")
@@ -482,6 +483,7 @@ class StockApp:
 
         return self.normalize_index_to_host_timezone(data, preserve_dates=False)
 
+    # noinspection PyBroadException
     def download_daily_signal_data(self, ticker: str, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
         download_kwargs = {
             "interval": "1d",
@@ -517,7 +519,7 @@ class StockApp:
             self.save_cached_data(cache_key, data)
 
         data = self.flatten_yfinance_columns(data)
-        if data is None or data.empty or "Close" not in data:
+        if data is None or data.empty or "Close" not in data.columns:
             return pd.DataFrame()
         data = self.normalize_index_to_host_timezone(data, preserve_dates=True)
 
@@ -593,7 +595,7 @@ class StockApp:
 
         try:
             parsed = pd.Timestamp(text)
-        except Exception as exc:
+        except (TypeError, ValueError) as exc:
             raise ValueError(f"Enter a valid custom {label} in YYYY-MM-DD format.") from exc
 
         if pd.isna(parsed):
@@ -715,7 +717,9 @@ class StockApp:
         return aligned_timestamp.tz_convert(index_tz)
 
     @staticmethod
+    # noinspection PyBroadException
     def get_earnings_events(ticker: str) -> pd.DataFrame:
+        ticker_data = None
         try:
             ticker_data = yf.Ticker(ticker)
             earnings_dates = ticker_data.earnings_dates
@@ -728,9 +732,9 @@ class StockApp:
             for event_time, row in earnings_dates.iterrows():
                 event_time = pd.Timestamp(event_time)
                 surprise = None
-                if "Surprise(%)" in row and not pd.isna(row["Surprise(%)"]):
+                if "Surprise(%)" in row.index and not StockApp.is_missing_value(row["Surprise(%)"]):
                     surprise = row["Surprise(%)"]
-                elif "Surprise %" in row and not pd.isna(row["Surprise %"]):
+                elif "Surprise %" in row.index and not StockApp.is_missing_value(row["Surprise %"]):
                     surprise = row["Surprise %"]
 
                 events.append({
@@ -738,7 +742,7 @@ class StockApp:
                     "surprise": surprise
                 })
 
-        if not events:
+        if not events and ticker_data is not None:
             try:
                 calendar = ticker_data.calendar
             except Exception as exc:
@@ -758,7 +762,7 @@ class StockApp:
                 if earnings_date is not None:
                     if isinstance(earnings_date, (list, tuple, pd.Series, pd.Index)):
                         earnings_date = earnings_date[0] if len(earnings_date) else None
-                    if earnings_date is not None and not pd.isna(earnings_date):
+                    if not StockApp.is_missing_value(earnings_date):
                         events.append({
                             "date": pd.Timestamp(earnings_date),
                             "surprise": None
@@ -887,6 +891,7 @@ class StockApp:
         return f"{value:.0f}"
 
     @staticmethod
+    # noinspection PyBroadException
     def fetch_fundamentals(ticker: str) -> dict[str, Any]:
         ticker_data = yf.Ticker(ticker)
         raw: dict[str, Any] = {}
@@ -906,7 +911,7 @@ class StockApp:
                 if name == "fast_info":
                     try:
                         value = dict(value)
-                    except Exception:
+                    except (TypeError, ValueError):
                         value = {}
                 raw[name] = value
             except Exception as exc:
@@ -921,6 +926,7 @@ class StockApp:
 
         return raw
 
+    # noinspection PyBroadException
     def get_fundamentals(self, ticker: str, refresh: bool = False, debug: bool = False) -> dict[str, Any]:
         if refresh or ticker not in self._fundamentals_cache:
             try:
@@ -959,7 +965,7 @@ class StockApp:
                 continue
 
             value = statement.loc[row_name].iloc[column_offset]
-            if value is not None and not pd.isna(value):
+            if not StockApp.is_missing_value(value):
                 return float(value)
 
         return None
@@ -1024,7 +1030,7 @@ class StockApp:
         try:
             row.index = pd.to_datetime(row.index)
             row = row.sort_index(ascending=False)
-        except Exception:
+        except (TypeError, ValueError, AttributeError):
             pass
 
         return row
@@ -1156,7 +1162,7 @@ class StockApp:
     def format_statement_date(value: Any) -> str:
         try:
             return pd.Timestamp(value).strftime("%Y-%m-%d")
-        except Exception:
+        except (TypeError, ValueError):
             return str(value)
 
     @staticmethod
@@ -1165,7 +1171,7 @@ class StockApp:
         for date, value in series.items():
             try:
                 formatted_value = f"{float(value):.4g}"
-            except Exception:
+            except (TypeError, ValueError):
                 formatted_value = str(value)
             values.append(f"{StockApp.format_statement_date(date)}={formatted_value}")
         return ", ".join(values)
@@ -1232,14 +1238,14 @@ class StockApp:
     def calculate_pe_history(price_history: Any, annual_income: Any) -> dict[str, float | None]:
         result = {"pe_3y_avg": None, "pe_5y_avg": None}
         eps = StockApp.statement_row(annual_income, "Diluted EPS")
-        if eps is None or not isinstance(price_history, pd.DataFrame) or price_history.empty or "Close" not in price_history:
+        if eps is None or not isinstance(price_history, pd.DataFrame) or price_history.empty or "Close" not in price_history.columns:
             return result
 
         pe_values = []
         history = price_history.copy()
         try:
             history = StockApp.normalize_index_to_host_timezone(history, preserve_dates=True)
-        except Exception:
+        except (TypeError, ValueError, AttributeError):
             return result
 
         for date, eps_value in eps.items():
@@ -1572,7 +1578,7 @@ class StockApp:
 
     @staticmethod
     def calculate_volume_indicators(data: pd.DataFrame) -> pd.DataFrame:
-        if "Volume" not in data:
+        if "Volume" not in data.columns:
             return data
 
         data["VOLUME_SMA20"] = data["Volume"].rolling(20).mean()
@@ -1612,7 +1618,7 @@ class StockApp:
 
     @staticmethod
     def calculate_period_price_summary(data: pd.DataFrame) -> dict[str, float | None]:
-        if data.empty or "Close" not in data:
+        if data.empty or "Close" not in data.columns:
             return {
                 "period_start_price": None,
                 "period_end_price": None,
@@ -1650,26 +1656,26 @@ class StockApp:
 
     @staticmethod
     def calculate_52w_levels(data: pd.DataFrame) -> tuple[float | None, float | None]:
-        if data.empty or "Close" not in data:
+        if data.empty or "Close" not in data.columns:
             return None, None
 
         end = data.index[-1]
         try:
             start = end - pd.DateOffset(years=1)
             window = data.loc[data.index >= start]
-        except Exception:
+        except (TypeError, ValueError, AttributeError):
             window = data.tail(252)
 
         if len(window) < 50:
             return None, None
 
-        high_source = window["High"] if "High" in window else window["Close"]
-        low_source = window["Low"] if "Low" in window else window["Close"]
+        high_source = window["High"] if "High" in window.columns else window["Close"]
+        low_source = window["Low"] if "Low" in window.columns else window["Close"]
         return high_source.max(), low_source.min()
 
     @staticmethod
     def calculate_cross(data: pd.DataFrame) -> str:
-        if "SMA50" not in data or "SMA200" not in data:
+        if not {"SMA50", "SMA200"}.issubset(data.columns):
             return "N/A"
 
         cross_data = data[["SMA50", "SMA200"]].dropna()
@@ -1695,7 +1701,7 @@ class StockApp:
 
     @staticmethod
     def calculate_daily_cross(data: pd.DataFrame) -> str:
-        if "DAILY_SMA50" not in data or "DAILY_SMA200" not in data:
+        if not {"DAILY_SMA50", "DAILY_SMA200"}.issubset(data.columns):
             return "N/A"
 
         cross_data = data[["DAILY_SMA50", "DAILY_SMA200"]].dropna()
@@ -1953,7 +1959,7 @@ class StockApp:
             "distance_52w_high": None,
             "distance_52w_low": None
         }
-        if data is None or data.empty or "Close" not in data:
+        if data is None or data.empty or "Close" not in data.columns:
             return empty_summary
 
         if as_of is not None:
@@ -2117,7 +2123,7 @@ class StockApp:
 
         try:
             return date2num(pd.to_datetime(plot_x).to_pydatetime())
-        except Exception:
+        except (TypeError, ValueError):
             return np.asarray(plot_x, dtype=float)
 
     @staticmethod
@@ -2149,7 +2155,7 @@ class StockApp:
     def format_cursor_timestamp(value: Any) -> str:
         try:
             timestamp = pd.Timestamp(value)
-        except Exception:
+        except (TypeError, ValueError):
             return str(value)
 
         if timestamp.tzinfo is not None:
@@ -2188,7 +2194,7 @@ class StockApp:
         available_series = [
             item
             for item in series
-            if item["column"] in data
+            if item["column"] in data.columns
         ]
         if not available_series or data.empty:
             return
@@ -2439,7 +2445,7 @@ class StockApp:
 
     @staticmethod
     def get_spike_times(data: pd.DataFrame) -> pd.Index:
-        if "VOLUME_SPIKE" not in data:
+        if "VOLUME_SPIKE" not in data.columns:
             return pd.Index([])
 
         return data.index[data["VOLUME_SPIKE"].fillna(False)]
@@ -2533,8 +2539,8 @@ class StockApp:
         if earnings_events.empty:
             return
 
-        price_min = data["Low"].min() if "Low" in data else data["Close"].min()
-        price_max = data["High"].max() if "High" in data else data["Close"].max()
+        price_min = data["Low"].min() if "Low" in data.columns else data["Close"].min()
+        price_max = data["High"].max() if "High" in data.columns else data["Close"].max()
         price_span = price_max - price_min
         marker_y = price_min + (price_span * 0.06 if price_span else 0)
 
@@ -2706,14 +2712,6 @@ class StockApp:
                 return state
             return f"{state} {distance}"
 
-        def all_status_color(*values: str) -> str:
-            normalized_values = [str(value).lower() for value in values]
-            if all(value in {"above", "above signal", "above 0", "bullish", "rising", "ok"} for value in normalized_values):
-                return "#16a34a"
-            if any(value in {"below", "below signal", "below 0", "falling", "extended"} for value in normalized_values):
-                return "#dc2626"
-            return "#64748b"
-
         trend_score = summary.get("daily_trend_score")
         trend_label = summary.get("daily_trend", StockApp.classify_trend_score(trend_score))
         trend_score_max = summary.get("daily_trend_score_max", BULLISH_STRUCTURE_SCORE_MAX)
@@ -2881,15 +2879,15 @@ class StockApp:
             )
             row_y -= title_rule_gap + after_rule_gap
 
-            for label, value, color, bold_value in section_rows:
+            for row_label, row_value, color, bold_value in section_rows:
                 if row_y < card_bottom + 0.012:
                     return
 
-                value_text = str(value).upper() if label.startswith("vs ") or label in {"Volume Trend"} else str(value)
+                value_text = str(row_value).upper() if row_label.startswith("vs ") or row_label in {"Volume Trend"} else str(row_value)
                 ax.text(
                     card_left + 0.016,
                     row_y,
-                    label,
+                    row_label,
                     transform=ax.transAxes,
                     ha="left",
                     va="top",
@@ -2955,7 +2953,7 @@ class StockApp:
                 return "#dc2626"
             return "#64748b"
 
-        def status_label(name: str, status: str, value: Any) -> str:
+        def status_label(name: str, status: str, _value: Any) -> str:
             if name in {"trailing_pe", "forward_pe"}:
                 if status == "good":
                     return "cheap"
@@ -3072,7 +3070,7 @@ class StockApp:
         self,
         volume_ax: Any,
         data: pd.DataFrame,
-        price_ax: Any,
+        _price_ax: Any,
         plot_x: pd.Index,
         compressed_x: bool,
         show_volume_sma20: bool = True,
@@ -3236,7 +3234,7 @@ class StockApp:
         data["DAILY_MACD"] = ema12 - ema26
         data["DAILY_MACD_SIGNAL"] = data["DAILY_MACD"].ewm(span=9, adjust=False).mean()
 
-        if "Volume" in data:
+        if "Volume" in data.columns:
             data["DAILY_VOLUME_SMA20"] = data["Volume"].rolling(20).mean()
             data["DAILY_RVOL20"] = data["Volume"] / data["DAILY_VOLUME_SMA20"]
 
@@ -3293,6 +3291,7 @@ class StockApp:
 
         return data
 
+    # noinspection PyBroadException
     def update_chart(self, refresh_fundamentals: bool = False):
         try:
             ticker = self.get_ticker()
