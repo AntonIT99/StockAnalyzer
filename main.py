@@ -826,7 +826,7 @@ class StockApp:
         aligned_timestamp = StockApp.align_timestamp_to_index(timestamp, index)
         try:
             position = index.searchsorted(aligned_timestamp)
-        except Exception:
+        except (TypeError, ValueError):
             return None
 
         if position <= 0:
@@ -839,7 +839,7 @@ class StockApp:
         try:
             if abs(aligned_timestamp - before) <= abs(after - aligned_timestamp):
                 return position - 1
-        except Exception:
+        except (TypeError, ValueError):
             pass
         return position
 
