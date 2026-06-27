@@ -16,7 +16,7 @@ from matplotlib.dates import date2num
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch, Patch
-from matplotlib.ticker import FuncFormatter, MaxNLocator
+from matplotlib.ticker import FixedLocator, FuncFormatter
 
 
 MAX_MOVING_AVERAGE_WINDOW = 200
@@ -30,14 +30,14 @@ CACHE_DIR = Path(__file__).with_name(".stock_cache")
 SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
 CUSTOM_PERIOD = "Custom"
 INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h"}
-COMPRESSED_INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
-PERIOD_OPTIONS = ["1h", "1d", "5d", "15d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", CUSTOM_PERIOD, "max"]
-INTERVAL_OPTIONS = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "5d", "1wk", "1mo", "3mo", "6mo", "1y"]
+COMPRESSED_AXIS_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d"}
+PERIOD_OPTIONS = ["1h", "1d", "1wk", "2wk", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", CUSTOM_PERIOD, "max"]
+INTERVAL_OPTIONS = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo", "3mo", "6mo", "1y"]
 PERIOD_DURATIONS = {
     "1h": pd.Timedelta(hours=1),
     "1d": pd.Timedelta(days=1),
-    "5d": pd.Timedelta(days=5),
-    "15d": pd.Timedelta(days=15),
+    "1wk": pd.Timedelta(weeks=1),
+    "2wk": pd.Timedelta(weeks=2),
     "1mo": pd.Timedelta(days=30),
     "3mo": pd.Timedelta(days=90),
     "6mo": pd.Timedelta(days=180),
@@ -57,7 +57,6 @@ INTERVAL_DURATIONS = {
     "30m": pd.Timedelta(minutes=30),
     "1h": pd.Timedelta(hours=1),
     "1d": pd.Timedelta(days=1),
-    "5d": pd.Timedelta(days=5),
     "1wk": pd.Timedelta(weeks=1),
     "1mo": pd.Timedelta(days=30),
     "3mo": pd.Timedelta(days=90),
@@ -72,7 +71,6 @@ INTERVAL_MAX_LOOKBACKS = {
     "30m": pd.Timedelta(days=60),
     "1h": pd.Timedelta(days=730),
     "1d": None,
-    "5d": None,
     "1wk": None,
     "1mo": None,
     "3mo": None,
@@ -87,7 +85,6 @@ DOWNLOAD_INTERVALS = {
     "30m": "30m",
     "1h": "1h",
     "1d": "1d",
-    "5d": "5d",
     "1wk": "1wk",
     "1mo": "1mo",
     "3mo": "3mo",
@@ -106,7 +103,6 @@ CACHE_TTLS = {
     "30m": pd.Timedelta(minutes=30),
     "1h": pd.Timedelta(minutes=15),
     "1d": pd.Timedelta(hours=6),
-    "5d": pd.Timedelta(hours=12),
     "1wk": pd.Timedelta(days=1),
     "1mo": pd.Timedelta(days=1),
     "3mo": pd.Timedelta(days=1),
@@ -138,6 +134,39 @@ INDICATOR_SETTINGS = [
 
 
 class StockApp:
+    @staticmethod
+    def get_host_timezone():
+        return datetime.now().astimezone().tzinfo
+
+    @staticmethod
+    def host_now() -> pd.Timestamp:
+        return pd.Timestamp.now(tz=StockApp.get_host_timezone()).tz_localize(None)
+
+    @staticmethod
+    def host_today() -> pd.Timestamp:
+        return StockApp.host_now().normalize()
+
+    @staticmethod
+    def to_host_naive_timestamp(value: Any) -> pd.Timestamp:
+        timestamp = pd.Timestamp(value)
+        if timestamp.tzinfo is not None:
+            return timestamp.tz_convert(StockApp.get_host_timezone()).tz_localize(None)
+        return timestamp
+
+    @staticmethod
+    def normalize_index_to_host_timezone(data: pd.DataFrame, preserve_dates: bool = False) -> pd.DataFrame:
+        if data is None or data.empty or not isinstance(data.index, pd.DatetimeIndex):
+            return data
+
+        normalized = data.copy()
+        if normalized.index.tz is not None:
+            normalized.index = normalized.index.tz_convert(StockApp.get_host_timezone()).tz_localize(None)
+
+        if preserve_dates:
+            normalized.index = normalized.index.normalize()
+
+        return normalized
+
     def __init__(self, root, initial_ticker=""):
         settings = self.load_settings()
 
@@ -148,10 +177,14 @@ class StockApp:
 
         ticker = initial_ticker or settings.get("ticker", "")
         period = settings.get("period", "6mo")
+        if period == "5d":
+            period = "1wk"
+        if period == "15d":
+            period = "2wk"
         if period not in PERIOD_OPTIONS:
             period = "6mo"
 
-        today = pd.Timestamp.now().normalize()
+        today = self.host_today()
         default_custom_start = (today - pd.DateOffset(months=6)).strftime("%Y-%m-%d")
         default_custom_end = today.strftime("%Y-%m-%d")
 
@@ -403,7 +436,7 @@ class StockApp:
         if max_lookback is None:
             return True
 
-        oldest_allowed_start = pd.Timestamp.now() - max_lookback
+        oldest_allowed_start = StockApp.host_now() - max_lookback
         return visible_start >= oldest_allowed_start
 
     def get_interval_rule_period(self):
@@ -450,7 +483,7 @@ class StockApp:
             intraday_period = self.get_intraday_download_period(interval, interval_rule_period)
             if intraday_period is None:
                 download_kwargs["start"] = self.get_download_start(visible_start, interval)
-                download_kwargs["end"] = pd.Timestamp.now().normalize() + pd.Timedelta(days=1)
+                download_kwargs["end"] = self.host_today() + pd.Timedelta(days=1)
             else:
                 download_kwargs["period"] = intraday_period
 
@@ -474,11 +507,95 @@ class StockApp:
         data = self.flatten_yfinance_columns(data)
         if data is None or data.empty:
             raise ValueError("No data received. Check the ticker, period, or interval.")
+        data = self.normalize_index_to_host_timezone(data, preserve_dates=interval not in INTRADAY_INTERVALS)
+        if interval == "1d":
+            data = self.append_missing_daily_bars_from_intraday(ticker, data)
 
         if interval in RESAMPLE_RULES:
             data = self.resample_ohlcv(data, RESAMPLE_RULES[interval])
 
-        return data.dropna(), visible_start, visible_end
+        return self.drop_incomplete_price_rows(data), visible_start, visible_end
+
+    def append_missing_daily_bars_from_intraday(self, ticker: str, data: pd.DataFrame) -> pd.DataFrame:
+        if data.empty:
+            return data
+
+        intraday_data = self.download_recent_intraday_for_daily_fallback(ticker)
+        if intraday_data.empty:
+            return data
+
+        intraday_daily = self.resample_ohlcv(intraday_data, "D")
+        if intraday_daily.empty:
+            return data
+
+        intraday_daily.index = intraday_daily.index.normalize()
+        latest_daily_date = pd.Timestamp(data.index.max()).normalize()
+        recent_intraday_daily = intraday_daily.loc[intraday_daily.index >= latest_daily_date]
+        if recent_intraday_daily.empty:
+            return data
+
+        combined = data.copy()
+        columns = list(dict.fromkeys([*combined.columns, *recent_intraday_daily.columns]))
+        combined = combined.reindex(columns=columns)
+
+        ohlcv_columns = [
+            column
+            for column in ("Open", "High", "Low", "Close", "Volume")
+            if column in recent_intraday_daily
+        ]
+        if not ohlcv_columns:
+            return data
+
+        for date, row in recent_intraday_daily.iterrows():
+            if date not in combined.index:
+                combined.loc[date, ohlcv_columns] = row[ohlcv_columns]
+                continue
+
+            for column in ohlcv_columns:
+                value = row[column]
+                if value is not None and not pd.isna(value):
+                    combined.loc[date, column] = value
+
+        return combined.sort_index()
+
+    @staticmethod
+    def drop_incomplete_price_rows(data: pd.DataFrame) -> pd.DataFrame:
+        required_columns = [
+            column
+            for column in ("Open", "High", "Low", "Close")
+            if column in data
+        ]
+        if not required_columns:
+            return data.dropna()
+        return data.dropna(subset=required_columns)
+
+    def download_recent_intraday_for_daily_fallback(self, ticker: str) -> pd.DataFrame:
+        cache_key = self.build_cache_key(ticker, "daily-latest-fallback-v2:10d", "daily-latest-fallback", "1h")
+        data = self.load_cached_data(cache_key, "1h")
+
+        if data is None:
+            try:
+                data = yf.download(
+                    ticker,
+                    period="10d",
+                    interval="1h",
+                    auto_adjust=True,
+                    progress=False
+                )
+            except Exception:
+                return pd.DataFrame()
+
+            data = self.flatten_yfinance_columns(data)
+            if data is None or data.empty:
+                return pd.DataFrame()
+
+            self.save_cached_data(cache_key, data)
+
+        data = self.flatten_yfinance_columns(data)
+        if data is None or data.empty:
+            return pd.DataFrame()
+
+        return self.normalize_index_to_host_timezone(data, preserve_dates=False)
 
     def download_daily_signal_data(self, ticker: str, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
         download_kwargs = {
@@ -490,9 +607,7 @@ class StockApp:
             cache_period = DAILY_SIGNAL_PERIOD
             download_kwargs["period"] = DAILY_SIGNAL_PERIOD
         else:
-            as_of = pd.Timestamp(as_of).normalize()
-            if as_of.tzinfo is not None:
-                as_of = as_of.tz_convert(None)
+            as_of = self.to_host_naive_timestamp(as_of).normalize()
             start = as_of - pd.DateOffset(years=2)
             cache_period = f"daily-structural:{start.strftime('%Y-%m-%d')}:{as_of.strftime('%Y-%m-%d')}"
             download_kwargs["start"] = start
@@ -519,6 +634,7 @@ class StockApp:
         data = self.flatten_yfinance_columns(data)
         if data is None or data.empty or "Close" not in data:
             return pd.DataFrame()
+        data = self.normalize_index_to_host_timezone(data, preserve_dates=True)
 
         return self.add_daily_structural_indicators(data.dropna())
 
@@ -564,7 +680,7 @@ class StockApp:
             return None
 
         cache_ttl = CACHE_TTLS.get(interval, pd.Timedelta(hours=6))
-        if pd.Timestamp.now() - fetched_at > cache_ttl:
+        if StockApp.host_now() - StockApp.to_host_naive_timestamp(fetched_at) > cache_ttl:
             return None
 
         return data.copy()
@@ -575,7 +691,7 @@ class StockApp:
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
             pd.to_pickle(
                 {
-                    "fetched_at": pd.Timestamp.now(),
+                    "fetched_at": StockApp.host_now(),
                     "data": data.copy()
                 },
                 StockApp.get_cache_path(cache_key)
@@ -593,13 +709,13 @@ class StockApp:
 
     def get_visible_start(self):
         period = self.period_var.get()
-        end = pd.Timestamp.now()
+        end = self.host_now()
 
         period_offsets = {
             "1h": pd.DateOffset(hours=1),
             "1d": pd.DateOffset(days=1),
-            "5d": pd.DateOffset(days=5),
-            "15d": pd.DateOffset(days=15),
+            "1wk": pd.DateOffset(weeks=1),
+            "2wk": pd.DateOffset(weeks=2),
             "1mo": pd.DateOffset(months=1),
             "3mo": pd.DateOffset(months=3),
             "6mo": pd.DateOffset(months=6),
@@ -631,7 +747,7 @@ class StockApp:
         if visible_end <= start:
             raise ValueError("Custom end date must be on or after the start date.")
 
-        if start > pd.Timestamp.now().normalize():
+        if start > self.host_today():
             raise ValueError("Custom start date cannot be in the future.")
 
         return start, visible_end
@@ -660,7 +776,7 @@ class StockApp:
             raise ValueError(f"Enter a valid custom {label} in YYYY-MM-DD format.")
 
         if parsed.tzinfo is not None:
-            parsed = parsed.tz_convert(None)
+            parsed = StockApp.to_host_naive_timestamp(parsed)
 
         return parsed.normalize()
 
@@ -699,8 +815,8 @@ class StockApp:
             warmup_periods = {
                 "1h": "3mo",
                 "1d": "3mo",
-                "5d": "3mo",
-                "15d": "3mo",
+                "1wk": "3mo",
+                "2wk": "3mo",
                 "1mo": "3mo",
                 "3mo": "6mo",
                 "6mo": "1y",
@@ -709,7 +825,7 @@ class StockApp:
             }
             return warmup_periods.get(period, period)
 
-        if period in {"1h", "1d", "5d", "15d", "1mo"}:
+        if period in {"1h", "1d", "1wk", "2wk", "1mo"}:
             return "1mo"
 
         return period
@@ -726,14 +842,14 @@ class StockApp:
 
         max_lookback = INTERVAL_MAX_LOOKBACKS[interval]
         if max_lookback is None:
-            if visible_start is not None and visible_start > pd.Timestamp.now().normalize():
+            if visible_start is not None and visible_start > self.host_today():
                 raise ValueError("Use a minute or hourly interval with the 1h period.")
             return
 
         if visible_start is None:
             raise ValueError("Yahoo Finance intraday data has a limited lookback window. Use a shorter period with intraday intervals.")
 
-        oldest_allowed_start = pd.Timestamp.now() - max_lookback
+        oldest_allowed_start = self.host_now() - max_lookback
         if visible_start < oldest_allowed_start:
             raise ValueError(f"Yahoo Finance {interval} data is limited to roughly the last {max_lookback.days} days. Select a shorter period.")
 
@@ -744,9 +860,6 @@ class StockApp:
 
         if interval == "1wk":
             return visible_start - pd.DateOffset(weeks=MAX_MOVING_AVERAGE_WINDOW + 20)
-
-        if interval == "5d":
-            return visible_start - pd.DateOffset(days=MAX_MOVING_AVERAGE_WINDOW * 7)
 
         if interval == "1mo":
             return visible_start - pd.DateOffset(months=MAX_MOVING_AVERAGE_WINDOW + 5)
@@ -790,12 +903,11 @@ class StockApp:
 
         if index_tz is None:
             if aligned_timestamp.tzinfo is not None:
-                return aligned_timestamp.tz_convert(None)
+                return StockApp.to_host_naive_timestamp(aligned_timestamp)
             return aligned_timestamp
 
         if aligned_timestamp.tzinfo is None:
-            local_tz = datetime.now().astimezone().tzinfo
-            return aligned_timestamp.tz_localize(local_tz).tz_convert(index_tz)
+            return aligned_timestamp.tz_localize(StockApp.get_host_timezone()).tz_convert(index_tz)
 
         return aligned_timestamp.tz_convert(index_tz)
 
@@ -894,8 +1006,8 @@ class StockApp:
         return max(median_delta / pd.Timedelta(days=1) * 0.8, 0.0005)
 
     @staticmethod
-    def uses_compressed_intraday_axis(interval: str) -> bool:
-        return interval in COMPRESSED_INTRADAY_INTERVALS
+    def uses_compressed_axis(interval: str) -> bool:
+        return interval in COMPRESSED_AXIS_INTERVALS
 
     @staticmethod
     def get_plot_x(data: pd.DataFrame, compressed_x: bool) -> pd.Index:
@@ -943,18 +1055,29 @@ class StockApp:
 
         index = data.index
         ax.set_xlim(-0.5, max(len(index) - 0.5, 0.5))
-        ax.xaxis.set_major_locator(MaxNLocator(nbins=8, integer=True, min_n_ticks=3))
+        if len(index) > 0:
+            tick_count = min(8, len(index))
+            tick_positions = np.rint(np.linspace(0, len(index) - 1, tick_count)).astype(int)
+            tick_positions = np.unique(np.concatenate(([0], tick_positions, [len(index) - 1])))
+            ax.xaxis.set_major_locator(FixedLocator(tick_positions))
 
-        def format_intraday_tick(value: float, _position: int) -> str:
+        has_intraday_times = any(
+            pd.Timestamp(timestamp).hour or pd.Timestamp(timestamp).minute or pd.Timestamp(timestamp).second
+            for timestamp in index
+        )
+
+        def format_compressed_tick(value: float, _position: int) -> str:
             tick_index = int(round(value))
             if tick_index < 0 or tick_index >= len(index):
                 return ""
             timestamp = pd.Timestamp(index[tick_index])
             if timestamp.tzinfo is not None:
-                timestamp = timestamp.tz_convert(None)
+                timestamp = StockApp.to_host_naive_timestamp(timestamp)
+            if not has_intraday_times:
+                return timestamp.strftime("%Y-%m-%d")
             return timestamp.strftime("%m-%d %H:%M")
 
-        ax.xaxis.set_major_formatter(FuncFormatter(format_intraday_tick))
+        ax.xaxis.set_major_formatter(FuncFormatter(format_compressed_tick))
         ax.tick_params(axis="x", labelsize=8)
 
     @staticmethod
@@ -1324,19 +1447,16 @@ class StockApp:
         pe_values = []
         history = price_history.copy()
         try:
-            history.index = pd.to_datetime(history.index).tz_localize(None)
+            history = StockApp.normalize_index_to_host_timezone(history, preserve_dates=True)
         except Exception:
-            try:
-                history.index = pd.to_datetime(history.index).tz_convert(None)
-            except Exception:
-                return result
+            return result
 
         for date, eps_value in eps.items():
             if StockApp.is_missing_value(eps_value) or float(eps_value) == 0:
                 continue
             statement_date = pd.Timestamp(date)
             if statement_date.tzinfo is not None:
-                statement_date = statement_date.tz_convert(None)
+                statement_date = StockApp.to_host_naive_timestamp(statement_date)
             historical_prices = history.loc[history.index <= statement_date]
             if historical_prices.empty:
                 continue
@@ -2242,7 +2362,7 @@ class StockApp:
             return str(value)
 
         if timestamp.tzinfo is not None:
-            timestamp = timestamp.tz_convert(None)
+            timestamp = StockApp.to_host_naive_timestamp(timestamp)
 
         if timestamp.hour or timestamp.minute or timestamp.second:
             return timestamp.strftime("%Y-%m-%d %H:%M")
@@ -3426,7 +3546,7 @@ class StockApp:
             summary_ax = self.figure.add_subplot(chart_grid[:, 1])
             fundamentals_ax = None
 
-        compressed_x = self.uses_compressed_intraday_axis(self.interval_var.get())
+        compressed_x = self.uses_compressed_axis(self.interval_var.get())
         plot_x = self.get_plot_x(data, compressed_x)
         selected_indicators = self.get_selected_indicators()
         debug_fundamentals = self.show_debug_fundamentals.get()
