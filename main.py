@@ -8,11 +8,17 @@ from typing import Any
 import yfinance as yf
 import numpy as np
 import pandas as pd
+# noinspection PyUnresolvedReferences
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+# noinspection PyUnresolvedReferences
 from matplotlib.dates import date2num
+# noinspection PyUnresolvedReferences
 from matplotlib.figure import Figure
+# noinspection PyUnresolvedReferences
 from matplotlib.lines import Line2D
+# noinspection PyUnresolvedReferences
 from matplotlib.patches import FancyBboxPatch, Patch
+# noinspection PyUnresolvedReferences
 from matplotlib.ticker import FixedLocator, FuncFormatter
 
 from stock_cache import build_cache_key, get_cache_path, load_cached_data, save_cached_data
