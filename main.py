@@ -2003,6 +2003,14 @@ class StockApp:
             and StockApp.is_valid_number(ema200)
             and ema20 > ema50 > ema100 > ema200
         )
+        ema_stack_bearish = (
+            StockApp.is_valid_number(ema20)
+            and StockApp.is_valid_number(ema50)
+            and StockApp.is_valid_number(ema100)
+            and StockApp.is_valid_number(ema200)
+            and ema20 < ema50 < ema100 < ema200
+        )
+        ema_stack = "Bullish" if ema_stack_bullish else "Bearish" if ema_stack_bearish else "Mixed"
         ema50_rising = (
             StockApp.is_valid_number(ema50)
             and StockApp.is_valid_number(ema50_20_bars_ago)
@@ -2026,7 +2034,7 @@ class StockApp:
             "extended_max_score": structure_score["extended_max_score"],
             "extended_rating": structure_score["extended_rating"],
             "distance_daily_ema20": StockApp.percentage_distance(current_price, ema20),
-            "daily_ema_stack": "Bullish" if ema_stack_bullish else "Mixed",
+            "daily_ema_stack": ema_stack,
             "daily_ema50_change_20": StockApp.percentage_distance(ema50, ema50_20_bars_ago),
             "daily_ema50_trend": "Rising" if ema50_rising else "Falling",
             "daily_rsi14": rsi14,
