@@ -1,9 +1,6 @@
 import argparse
-import hashlib
 import json
 import time
-from datetime import datetime
-from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Any
@@ -18,154 +15,52 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch, Patch
 from matplotlib.ticker import FixedLocator, FuncFormatter
 
-
-MAX_MOVING_AVERAGE_WINDOW = 200
-BULLISH_STRUCTURE_SCORE_MAX = 14
-CONFIRMATION_SCORE_MAX = 3
-EXTENDED_BULLISH_SCORE_MAX = BULLISH_STRUCTURE_SCORE_MAX + CONFIRMATION_SCORE_MAX
-ATR_PCT_HEALTHY_MIN = 0.01
-ATR_PCT_HEALTHY_MAX = 0.06
-DAILY_SIGNAL_PERIOD = "2y"
-CACHE_DIR = Path(__file__).with_name(".stock_cache")
-SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
-CUSTOM_PERIOD = "Custom"
-INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h"}
-COMPRESSED_AXIS_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d"}
-PERIOD_OPTIONS = ["1h", "1d", "1wk", "2wk", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", CUSTOM_PERIOD, "max"]
-INTERVAL_OPTIONS = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo", "3mo", "6mo", "1y"]
-PERIOD_DURATIONS = {
-    "1h": pd.Timedelta(hours=1),
-    "1d": pd.Timedelta(days=1),
-    "1wk": pd.Timedelta(weeks=1),
-    "2wk": pd.Timedelta(weeks=2),
-    "1mo": pd.Timedelta(days=30),
-    "3mo": pd.Timedelta(days=90),
-    "6mo": pd.Timedelta(days=180),
-    "1y": pd.Timedelta(days=365),
-    "2y": pd.Timedelta(days=365 * 2),
-    "3y": pd.Timedelta(days=365 * 3),
-    "4y": pd.Timedelta(days=365 * 4),
-    "5y": pd.Timedelta(days=365 * 5),
-    "10y": pd.Timedelta(days=365 * 10),
-    "max": None
-}
-INTERVAL_DURATIONS = {
-    "1m": pd.Timedelta(minutes=1),
-    "2m": pd.Timedelta(minutes=2),
-    "5m": pd.Timedelta(minutes=5),
-    "15m": pd.Timedelta(minutes=15),
-    "30m": pd.Timedelta(minutes=30),
-    "1h": pd.Timedelta(hours=1),
-    "1d": pd.Timedelta(days=1),
-    "1wk": pd.Timedelta(weeks=1),
-    "1mo": pd.Timedelta(days=30),
-    "3mo": pd.Timedelta(days=90),
-    "6mo": pd.Timedelta(days=180),
-    "1y": pd.Timedelta(days=365)
-}
-INTERVAL_MAX_LOOKBACKS = {
-    "1m": pd.Timedelta(days=8),
-    "2m": pd.Timedelta(days=60),
-    "5m": pd.Timedelta(days=60),
-    "15m": pd.Timedelta(days=60),
-    "30m": pd.Timedelta(days=60),
-    "1h": pd.Timedelta(days=730),
-    "1d": None,
-    "1wk": None,
-    "1mo": None,
-    "3mo": None,
-    "6mo": None,
-    "1y": None
-}
-DOWNLOAD_INTERVALS = {
-    "1m": "1m",
-    "2m": "2m",
-    "5m": "5m",
-    "15m": "15m",
-    "30m": "30m",
-    "1h": "1h",
-    "1d": "1d",
-    "1wk": "1wk",
-    "1mo": "1mo",
-    "3mo": "3mo",
-    "6mo": "1d",
-    "1y": "1d"
-}
-RESAMPLE_RULES = {
-    "6mo": "6ME",
-    "1y": "YE"
-}
-CACHE_TTLS = {
-    "1m": pd.Timedelta(minutes=2),
-    "2m": pd.Timedelta(minutes=5),
-    "5m": pd.Timedelta(minutes=10),
-    "15m": pd.Timedelta(minutes=15),
-    "30m": pd.Timedelta(minutes=30),
-    "1h": pd.Timedelta(minutes=15),
-    "1d": pd.Timedelta(hours=6),
-    "1wk": pd.Timedelta(days=1),
-    "1mo": pd.Timedelta(days=1),
-    "3mo": pd.Timedelta(days=1),
-    "6mo": pd.Timedelta(days=1),
-    "1y": pd.Timedelta(days=1)
-}
-INDICATOR_SETTINGS = [
-    "show_ema9",
-    "show_ema12",
-    "show_ema20",
-    "show_ema50",
-    "show_ema100",
-    "show_ema200",
-    "show_sma20",
-    "show_sma50",
-    "show_sma100",
-    "show_sma200",
-    "show_bollinger",
-    "show_rsi",
-    "show_macd",
-    "show_volume",
-    "show_volume_sma20",
-    "show_volume_ema50",
-    "show_atr",
-    "show_earnings",
-    "show_fundamentals",
-    "show_debug_fundamentals"
-]
+from stock_cache import build_cache_key, get_cache_path, load_cached_data, save_cached_data
+from stock_config import (
+    ATR_PCT_HEALTHY_MAX,
+    ATR_PCT_HEALTHY_MIN,
+    BULLISH_STRUCTURE_SCORE_MAX,
+    COMPRESSED_AXIS_INTERVALS,
+    CONFIRMATION_SCORE_MAX,
+    CUSTOM_PERIOD,
+    DAILY_SIGNAL_PERIOD,
+    DOWNLOAD_INTERVALS,
+    EXTENDED_BULLISH_SCORE_MAX,
+    INDICATOR_SETTINGS,
+    INTERVAL_DURATIONS,
+    INTERVAL_MAX_LOOKBACKS,
+    INTERVAL_OPTIONS,
+    INTRADAY_INTERVALS,
+    MAX_MOVING_AVERAGE_WINDOW,
+    PERIOD_DURATIONS,
+    PERIOD_OPTIONS,
+    RESAMPLE_RULES,
+    SETTINGS_PATH
+)
+from stock_ohlcv import drop_incomplete_price_rows, flatten_yfinance_columns, get_bar_width, resample_ohlcv
+from stock_time import (
+    get_host_timezone,
+    host_now,
+    host_today,
+    normalize_index_to_host_timezone,
+    to_host_naive_timestamp
+)
 
 
 class StockApp:
-    @staticmethod
-    def get_host_timezone():
-        return datetime.now().astimezone().tzinfo
-
-    @staticmethod
-    def host_now() -> pd.Timestamp:
-        return pd.Timestamp.now(tz=StockApp.get_host_timezone()).tz_localize(None)
-
-    @staticmethod
-    def host_today() -> pd.Timestamp:
-        return StockApp.host_now().normalize()
-
-    @staticmethod
-    def to_host_naive_timestamp(value: Any) -> pd.Timestamp:
-        timestamp = pd.Timestamp(value)
-        if timestamp.tzinfo is not None:
-            return timestamp.tz_convert(StockApp.get_host_timezone()).tz_localize(None)
-        return timestamp
-
-    @staticmethod
-    def normalize_index_to_host_timezone(data: pd.DataFrame, preserve_dates: bool = False) -> pd.DataFrame:
-        if data is None or data.empty or not isinstance(data.index, pd.DatetimeIndex):
-            return data
-
-        normalized = data.copy()
-        if normalized.index.tz is not None:
-            normalized.index = normalized.index.tz_convert(StockApp.get_host_timezone()).tz_localize(None)
-
-        if preserve_dates:
-            normalized.index = normalized.index.normalize()
-
-        return normalized
+    get_host_timezone = staticmethod(get_host_timezone)
+    host_now = staticmethod(host_now)
+    host_today = staticmethod(host_today)
+    to_host_naive_timestamp = staticmethod(to_host_naive_timestamp)
+    normalize_index_to_host_timezone = staticmethod(normalize_index_to_host_timezone)
+    flatten_yfinance_columns = staticmethod(flatten_yfinance_columns)
+    build_cache_key = staticmethod(build_cache_key)
+    get_cache_path = staticmethod(get_cache_path)
+    load_cached_data = staticmethod(load_cached_data)
+    save_cached_data = staticmethod(save_cached_data)
+    drop_incomplete_price_rows = staticmethod(drop_incomplete_price_rows)
+    resample_ohlcv = staticmethod(resample_ohlcv)
+    get_bar_width = staticmethod(get_bar_width)
 
     def __init__(self, root, initial_ticker=""):
         settings = self.load_settings()
@@ -558,17 +453,6 @@ class StockApp:
 
         return combined.sort_index()
 
-    @staticmethod
-    def drop_incomplete_price_rows(data: pd.DataFrame) -> pd.DataFrame:
-        required_columns = [
-            column
-            for column in ("Open", "High", "Low", "Close")
-            if column in data
-        ]
-        if not required_columns:
-            return data.dropna()
-        return data.dropna(subset=required_columns)
-
     def download_recent_intraday_for_daily_fallback(self, ticker: str) -> pd.DataFrame:
         cache_key = self.build_cache_key(ticker, "daily-latest-fallback-v2:10d", "daily-latest-fallback", "1h")
         data = self.load_cached_data(cache_key, "1h")
@@ -637,67 +521,6 @@ class StockApp:
         data = self.normalize_index_to_host_timezone(data, preserve_dates=True)
 
         return self.add_daily_structural_indicators(data.dropna())
-
-    @staticmethod
-    def flatten_yfinance_columns(data: pd.DataFrame) -> pd.DataFrame:
-        if data is None or data.empty:
-            return pd.DataFrame()
-
-        flattened = data.copy()
-        if isinstance(flattened.columns, pd.MultiIndex):
-            flattened.columns = flattened.columns.get_level_values(0)
-
-        return flattened
-
-    @staticmethod
-    def build_cache_key(ticker, period, interval, download_interval):
-        cache_parts = {
-            "version": 4,
-            "ticker": ticker,
-            "period": period,
-            "interval": interval,
-            "download_interval": download_interval,
-            "auto_adjust": True
-        }
-        cache_text = json.dumps(cache_parts, sort_keys=True)
-        return hashlib.sha256(cache_text.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def get_cache_path(cache_key):
-        return CACHE_DIR / f"{cache_key}.pkl"
-
-    @staticmethod
-    def load_cached_data(cache_key, interval):
-        cache_path = StockApp.get_cache_path(cache_key)
-        if not cache_path.exists():
-            return None
-
-        try:
-            payload = pd.read_pickle(cache_path)
-            fetched_at = pd.Timestamp(payload["fetched_at"])
-            data = payload["data"]
-        except Exception:
-            return None
-
-        cache_ttl = CACHE_TTLS.get(interval, pd.Timedelta(hours=6))
-        if StockApp.host_now() - StockApp.to_host_naive_timestamp(fetched_at) > cache_ttl:
-            return None
-
-        return data.copy()
-
-    @staticmethod
-    def save_cached_data(cache_key, data):
-        try:
-            CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            pd.to_pickle(
-                {
-                    "fetched_at": StockApp.host_now(),
-                    "data": data.copy()
-                },
-                StockApp.get_cache_path(cache_key)
-            )
-        except Exception:
-            pass
 
     def get_ticker(self):
         ticker = self.ticker_var.get().strip().upper()
@@ -876,27 +699,6 @@ class StockApp:
         return visible_start - pd.DateOffset(days=MAX_MOVING_AVERAGE_WINDOW * 2)
 
     @staticmethod
-    def resample_ohlcv(data, rule):
-        resample_columns = {}
-
-        if "Open" in data:
-            resample_columns["Open"] = "first"
-        if "High" in data:
-            resample_columns["High"] = "max"
-        if "Low" in data:
-            resample_columns["Low"] = "min"
-        if "Close" in data:
-            resample_columns["Close"] = "last"
-        if "Volume" in data:
-            resample_columns["Volume"] = "sum"
-
-        resampled_data = data.resample(rule).agg(resample_columns).dropna()
-        if not resampled_data.empty and resampled_data.index[-1] > data.index[-1]:
-            resampled_data = resampled_data.rename(index={resampled_data.index[-1]: data.index[-1]})
-
-        return resampled_data
-
-    @staticmethod
     def align_timestamp_to_index(timestamp, index):
         index_tz = getattr(index, "tz", None)
         aligned_timestamp = pd.Timestamp(timestamp)
@@ -992,18 +794,6 @@ class StockApp:
                 })
 
         return pd.DataFrame(visible_events, columns=["date", "surprise", "label"])
-
-    @staticmethod
-    def get_bar_width(index):
-        if len(index) < 2:
-            return 0.8
-
-        deltas = pd.Series(index).diff().dropna()
-        if deltas.empty:
-            return 0.8
-
-        median_delta = deltas.median()
-        return max(median_delta / pd.Timedelta(days=1) * 0.8, 0.0005)
 
     @staticmethod
     def uses_compressed_axis(interval: str) -> bool:
