@@ -2742,15 +2742,18 @@ class StockApp:
         trend_label = summary.get("daily_trend", StockApp.classify_trend_score(trend_score))
         trend_score_max = summary.get("daily_trend_score_max", BULLISH_STRUCTURE_SCORE_MAX)
         trend_score_text = "N/A" if trend_score is None else f"{int(trend_score)}/{trend_score_max} {trend_label}"
+        bullish_structure_score_text = "N/A" if trend_score is None else f"{int(trend_score)}/{trend_score_max}"
         confirmation_score = summary.get("confirmation_score")
         confirmation_max = summary.get("confirmation_max", CONFIRMATION_SCORE_MAX)
         confirmation_score_text = "N/A" if confirmation_score is None else f"{int(confirmation_score)}/{confirmation_max}"
         extended_total_score = summary.get("extended_total_score")
         extended_max_score = summary.get("extended_max_score", EXTENDED_BULLISH_SCORE_MAX)
         extended_rating = summary.get("extended_rating", "N/A")
+        verdict_text = extended_rating if extended_rating != "N/A" else trend_label
+        extended_score_text = "N/A" if extended_total_score is None else f"{int(extended_total_score)}/{extended_max_score}"
         extended_total_text = "N/A"
         if extended_total_score is not None:
-            extended_total_text = f"{int(extended_total_score)}/{extended_max_score}"
+            extended_total_text = extended_score_text
             if extended_rating != "N/A":
                 extended_total_text = f"{extended_total_text} {extended_rating}"
         rvol20 = summary.get("daily_rvol20")
@@ -2761,21 +2764,53 @@ class StockApp:
                 return "#64748b"
             return "#16a34a" if passed else "#dc2626"
 
-        def pass_fail_text(passed: bool | None) -> str:
+        def status_symbol(passed: bool | None) -> str:
             if passed is None:
-                return "N/A"
-            return "Pass" if passed else "Fail"
+                return "—"
+            return "✓" if passed else "✗"
 
         def bool_score_text(passed: bool | None, text: str) -> str:
             if passed is None:
                 return f"N/A {text}"
             return f"{1 if passed else 0}/1 {text}"
 
+        def symbol_score_text(passed: bool | None, text: str) -> str:
+            symbol = status_symbol(passed)
+            if not text or text == "N/A":
+                return symbol
+            return f"{symbol} {text}"
+
         def score_text(passed_values: list[bool | None], max_score: int, text: str) -> str:
             valid_values = [value for value in passed_values if value is not None]
             if not valid_values:
                 return f"N/A {text}"
             return f"{sum(1 for value in valid_values if value)}/{max_score} {text}"
+
+        def score_label(value: int | None, max_score: int, confirmation: bool = False) -> str:
+            if value is None:
+                return "N/A"
+            if confirmation:
+                if value >= 3:
+                    return "Strong"
+                if value == 2:
+                    return "Mixed"
+                if value == 1:
+                    return "Weak"
+                return "Bearish"
+            ratio = value / max_score if max_score else 0
+            if ratio >= 0.75:
+                return "Bullish"
+            if ratio >= 0.50:
+                return "Mixed"
+            if value > 0:
+                return "Weak"
+            return "Bearish"
+
+        def score_header(title: str, key: str, max_score: int, confirmation: bool = False) -> str:
+            value = summary.get(key)
+            if value is None:
+                return f"{title} — N/A"
+            return f"{title} — {int(value)}/{max_score} {score_label(int(value), max_score, confirmation)}"
 
         def valid_distance_pass(key: str) -> bool | None:
             value = summary.get(key)
@@ -2809,6 +2844,20 @@ class StockApp:
         ema_stack_values = [ema20_above_ema50, ema50_above_ema100, ema100_above_ema200]
         ema_stack_score = score_text(ema_stack_values, 3, summary.get("daily_ema_stack", "N/A"))
 
+        def reason_from_bool(passed: bool | None, bullish_text: str, bearish_text: str) -> str | None:
+            if passed is None:
+                return None
+            return bullish_text if passed else bearish_text
+
+        key_reasons = [
+            reason_from_bool(price_above_ema20, "Price above EMA20", "Price below EMA20"),
+            reason_from_bool(price_above_sma200, "Price above SMA200", "Price below SMA200"),
+            f"{summary.get('daily_ema_stack', 'N/A')} EMA stack" if summary.get("daily_ema_stack", "N/A") != "N/A" else None,
+            reason_from_bool(rsi_above_50, "RSI above 50", "RSI below 50"),
+            reason_from_bool(macd_above_signal, "MACD above signal", "MACD below signal")
+        ]
+        key_reasons = [reason for reason in key_reasons if reason][:5]
+
         sections = [
             (
                 "Period",
@@ -2828,22 +2877,22 @@ class StockApp:
                 ]
             ),
             (
-                "Trend Score",
+                score_header("Trend Score", "daily_trend_score_trend", 8),
                 [
                     ("Price vs EMA20", bool_score_text(price_above_ema20, format_distance_state(summary.get("distance_daily_ema20"))), distance_color(summary.get("distance_daily_ema20")), True),
                     ("Price vs SMA50", bool_score_text(price_above_sma50, format_level_distance(summary.get("price_vs_daily_sma50", "n/a"), summary.get("distance_daily_sma50"))), distance_color(summary.get("distance_daily_sma50")), True),
                     ("Price vs SMA200", bool_score_text(price_above_sma200, format_level_distance(summary.get("price_vs_daily_sma200", "n/a"), summary.get("distance_daily_sma200"))), distance_color(summary.get("distance_daily_sma200")), True),
                     ("EMA Stack", ema_stack_score, status_color(summary.get("daily_ema_stack", "N/A")), True),
-                    ("  EMA20 > EMA50", pass_fail_text(ema20_above_ema50), score_color(ema20_above_ema50), False),
-                    ("  EMA50 > EMA100", pass_fail_text(ema50_above_ema100), score_color(ema50_above_ema100), False),
-                    ("  EMA100 > EMA200", pass_fail_text(ema100_above_ema200), score_color(ema100_above_ema200), False),
-                    ("SMA50 > SMA200", bool_score_text(sma50_above_sma200, pass_fail_text(sma50_above_sma200)), score_color(sma50_above_sma200), True),
+                    ("  EMA20 > EMA50", status_symbol(ema20_above_ema50), score_color(ema20_above_ema50), False),
+                    ("  EMA50 > EMA100", status_symbol(ema50_above_ema100), score_color(ema50_above_ema100), False),
+                    ("  EMA100 > EMA200", status_symbol(ema100_above_ema200), score_color(ema100_above_ema200), False),
+                    ("Daily Cross (SMA50 > SMA200)", bool_score_text(sma50_above_sma200, summary.get("daily_cross", "N/A")), score_color(sma50_above_sma200), True),
                     ("EMA50 Trend", bool_score_text(ema50_rising, format_ema50_trend()), status_color(summary.get("daily_ema50_trend", "N/A")), False),
                     ("Subtotal", format_score_part("daily_trend_score_trend", 8), "#111827", True)
                 ]
             ),
             (
-                "Momentum Score",
+                score_header("Momentum Score", "daily_trend_score_momentum", 3),
                 [
                     (
                         "RSI14 > 50",
@@ -2867,7 +2916,7 @@ class StockApp:
                 ]
             ),
             (
-                "Quality Score",
+                score_header("Quality Score", "daily_trend_score_quality", 3),
                 [
                     ("Volume vs SMA20", bool_score_text(volume_above_sma20, format_level_distance(summary.get("volume_vs_sma20", "N/A"), summary.get("distance_volume_sma20"))), distance_color(summary.get("distance_volume_sma20")), True),
                     ("EMA20 Ext <=8%", bool_score_text(status_pass("daily_ema20_extension_state", "OK"), format_extension("daily_ema20_extension_state", "daily_ema20_extension")), status_color(summary.get("daily_ema20_extension_state", "N/A")), False),
@@ -2876,22 +2925,21 @@ class StockApp:
                 ]
             ),
             (
-                "Confirmation",
+                score_header("Confirmation", "confirmation_score", confirmation_max, confirmation=True),
                 [
-                    ("RVOL20>1.1 + EMA20", bool_score_text(rvol_confirmed, pass_fail_text(rvol_confirmed)), score_color(rvol_confirmed), True),
+                    ("RVOL20>1.1 + EMA20", symbol_score_text(rvol_confirmed, ""), score_color(rvol_confirmed), True),
                     ("RVOL20", rvol20_text, rvol_color(rvol20), False),
-                    ("Volume vs SMA20", bool_score_text(volume_above_sma20, pass_fail_text(volume_above_sma20)), score_color(volume_above_sma20), True),
-                    ("ATR% Range", bool_score_text(status_pass("daily_atr_pct_state", "Healthy"), summary.get("daily_atr_pct_state", "N/A")), status_color(summary.get("daily_atr_pct_state", "N/A")), False),
+                    ("Volume vs SMA20", symbol_score_text(volume_above_sma20, ""), score_color(volume_above_sma20), True),
+                    ("ATR% Range", symbol_score_text(status_pass("daily_atr_pct_state", "Healthy"), summary.get("daily_atr_pct_state", "N/A")), status_color(summary.get("daily_atr_pct_state", "N/A")), False),
                     ("Subtotal", confirmation_score_text, confirmation_score_color(confirmation_score), True)
                 ]
             ),
             (
-                "Not Scored",
+                "Diagnostics",
                 [
                     ("Volume Trend", summary.get("volume_trend", "Neutral"), status_color(summary.get("volume_trend", "Neutral")), True),
                     ("RVOL", rvol_text, rvol_color(current_rvol), False),
-                    ("ATR 14", atr_text, status_color(summary.get("daily_atr_pct_state", "N/A")), False),
-                    ("Daily Cross", summary.get("daily_cross", "N/A"), status_color(summary.get("daily_cross", "N/A")), False)
+                    ("ATR 14", atr_text, status_color(summary.get("daily_atr_pct_state", "N/A")), False)
                 ]
             ),
             (
@@ -2927,7 +2975,7 @@ class StockApp:
 
         ax.text(
             card_left + 0.016,
-            card_top - 0.030,
+            card_top - 0.026,
             "Signal Summary",
             transform=ax.transAxes,
             ha="left",
@@ -2938,17 +2986,120 @@ class StockApp:
             zorder=7
         )
 
+        verdict_color = status_color(verdict_text)
+        period_change_text = self.format_summary_percent(summary.get("period_change"))
+        period_change_color = distance_color(summary.get("period_change"))
+        verdict_left = card_left + 0.016
+        verdict_right = card_right - 0.016
+        verdict_top = card_top - 0.052
+        reason_step = 0.0142
+        reasons_top = verdict_top - 0.069
+        verdict_bottom = reasons_top - max(len(key_reasons), 1) * reason_step - 0.010
+
+        verdict_box = FancyBboxPatch(
+            (card_left + 0.012, verdict_bottom),
+            card_width - 0.024,
+            verdict_top - verdict_bottom + 0.012,
+            boxstyle="round,pad=0.006",
+            transform=ax.transAxes,
+            facecolor="#f8fafc",
+            edgecolor="#e5e7eb",
+            linewidth=0.6,
+            alpha=0.98,
+            zorder=6
+        )
+        ax.add_patch(verdict_box)
+
+        ax.text(
+            verdict_left,
+            verdict_top,
+            verdict_text,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=10.2,
+            fontweight="bold",
+            color=verdict_color,
+            zorder=7
+        )
+        ax.text(
+            verdict_right,
+            verdict_top,
+            f"Extended {extended_score_text}",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=7.3,
+            fontweight="bold",
+            color=verdict_color,
+            zorder=7
+        )
+
+        score_y = verdict_top - 0.028
+        ax.text(
+            verdict_left,
+            score_y,
+            f"Bullish Structure {bullish_structure_score_text}",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=7.0,
+            fontweight="bold",
+            color=trend_score_color(trend_score),
+            zorder=7
+        )
+        ax.text(
+            verdict_right,
+            score_y,
+            f"Period {period_change_text}",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=7.0,
+            fontweight="bold",
+            color=period_change_color,
+            zorder=7
+        )
+
+        ax.text(
+            verdict_left,
+            reasons_top,
+            "Key Reasons",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=7.4,
+            fontweight="bold",
+            color="#111827",
+            zorder=7
+        )
+        reason_y = reasons_top - 0.016
+        for reason in key_reasons:
+            ax.text(
+                verdict_left,
+                reason_y,
+                f"- {reason}",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=6.7,
+                color="#374151",
+                zorder=7
+            )
+            reason_y -= reason_step
+
         total_rows = sum(len(rows) for _section, rows in sections)
         total_sections = len(sections)
-        row_step = min(0.030, (card_height - 0.094) / max(total_rows + (total_sections * 0.72), 1))
-        row_step = max(row_step, 0.0175)
+        row_y = verdict_bottom - 0.016
+        detail_height = max(row_y - card_bottom - 0.014, 0.1)
+        row_step = min(0.030, detail_height / max(total_rows + (total_sections * 0.88), 1))
+        row_step = max(row_step, 0.0155)
         title_rule_gap = row_step * 0.56
         after_rule_gap = row_step * 0.12
-        section_gap = row_step * 0.12
-        section_font_size = 8.4 if row_step >= 0.0185 else 8.0
-        row_font_size = 7.2 if row_step >= 0.0185 else 6.9
+        section_gap = row_step * 0.22
+        section_font_size = 8.2 if row_step >= 0.017 else 7.8
+        row_font_size = 7.0 if row_step >= 0.017 else 6.6
 
-        row_y = card_top - 0.058
         for section, section_rows in sections:
             if row_y < card_bottom + 0.014:
                 return
