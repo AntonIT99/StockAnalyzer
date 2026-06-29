@@ -1940,6 +1940,10 @@ class StockApp:
             "extended_rating": "N/A",
             "distance_daily_ema20": None,
             "daily_ema_stack": "N/A",
+            "daily_ema20_vs_ema50": "N/A",
+            "daily_ema50_vs_ema100": "N/A",
+            "daily_ema100_vs_ema200": "N/A",
+            "daily_sma50_vs_sma200": "N/A",
             "daily_ema50_change_20": None,
             "daily_ema50_trend": "N/A",
             "daily_rsi14": None,
@@ -2011,6 +2015,10 @@ class StockApp:
             and ema20 < ema50 < ema100 < ema200
         )
         ema_stack = "Bullish" if ema_stack_bullish else "Bearish" if ema_stack_bearish else "Mixed"
+        ema20_above_ema50 = StockApp.is_valid_number(ema20) and StockApp.is_valid_number(ema50) and ema20 > ema50
+        ema50_above_ema100 = StockApp.is_valid_number(ema50) and StockApp.is_valid_number(ema100) and ema50 > ema100
+        ema100_above_ema200 = StockApp.is_valid_number(ema100) and StockApp.is_valid_number(ema200) and ema100 > ema200
+        sma50_above_sma200 = StockApp.is_valid_number(sma50) and StockApp.is_valid_number(sma200) and sma50 > sma200
         ema50_rising = (
             StockApp.is_valid_number(ema50)
             and StockApp.is_valid_number(ema50_20_bars_ago)
@@ -2035,6 +2043,10 @@ class StockApp:
             "extended_rating": structure_score["extended_rating"],
             "distance_daily_ema20": StockApp.percentage_distance(current_price, ema20),
             "daily_ema_stack": ema_stack,
+            "daily_ema20_vs_ema50": "Above" if ema20_above_ema50 else "Below",
+            "daily_ema50_vs_ema100": "Above" if ema50_above_ema100 else "Below",
+            "daily_ema100_vs_ema200": "Above" if ema100_above_ema200 else "Below",
+            "daily_sma50_vs_sma200": "Above" if sma50_above_sma200 else "Below",
             "daily_ema50_change_20": StockApp.percentage_distance(ema50, ema50_20_bars_ago),
             "daily_ema50_trend": "Rising" if ema50_rising else "Falling",
             "daily_rsi14": rsi14,
@@ -2690,7 +2702,7 @@ class StockApp:
                 return "#f97316"
             if value >= 1:
                 return "#16a34a"
-            return "#0ea5e9"
+            return "#dc2626"
 
         def format_level_distance(level_state: str, distance: float | None) -> str:
             if str(level_state).lower() == "n/a" or distance is None or pd.isna(distance):
@@ -2743,6 +2755,60 @@ class StockApp:
                 extended_total_text = f"{extended_total_text} {extended_rating}"
         rvol20 = summary.get("daily_rvol20")
         rvol20_text = "N/A" if rvol20 is None or pd.isna(rvol20) else f"{rvol20:.2f}x"
+
+        def score_color(passed: bool | None) -> str:
+            if passed is None:
+                return "#64748b"
+            return "#16a34a" if passed else "#dc2626"
+
+        def pass_fail_text(passed: bool | None) -> str:
+            if passed is None:
+                return "N/A"
+            return "Pass" if passed else "Fail"
+
+        def bool_score_text(passed: bool | None, text: str) -> str:
+            if passed is None:
+                return f"N/A {text}"
+            return f"{1 if passed else 0}/1 {text}"
+
+        def score_text(passed_values: list[bool | None], max_score: int, text: str) -> str:
+            valid_values = [value for value in passed_values if value is not None]
+            if not valid_values:
+                return f"N/A {text}"
+            return f"{sum(1 for value in valid_values if value)}/{max_score} {text}"
+
+        def valid_distance_pass(key: str) -> bool | None:
+            value = summary.get(key)
+            if value is None or pd.isna(value):
+                return None
+            return value > 0
+
+        def status_pass(key: str, passing_value: str = "Above") -> bool | None:
+            value = summary.get(key, "N/A")
+            if str(value).lower() == "n/a":
+                return None
+            return str(value).lower() == passing_value.lower()
+
+        price_above_ema20 = valid_distance_pass("distance_daily_ema20")
+        price_above_sma50 = valid_distance_pass("distance_daily_sma50")
+        price_above_sma200 = valid_distance_pass("distance_daily_sma200")
+        ema20_above_ema50 = status_pass("daily_ema20_vs_ema50")
+        ema50_above_ema100 = status_pass("daily_ema50_vs_ema100")
+        ema100_above_ema200 = status_pass("daily_ema100_vs_ema200")
+        sma50_above_sma200 = status_pass("daily_sma50_vs_sma200")
+        ema50_rising = status_pass("daily_ema50_trend", "Rising")
+        rsi_above_50 = None
+        if StockApp.is_valid_number(summary.get("daily_rsi14")):
+            rsi_above_50 = summary.get("daily_rsi14") > 50
+        macd_above_signal = status_pass("daily_macd_vs_signal", "Above Signal")
+        macd_above_zero = status_pass("daily_macd_zero", "Above 0")
+        volume_above_sma20 = status_pass("volume_vs_sma20")
+        rvol_confirmed = None
+        if StockApp.is_valid_number(rvol20) and price_above_ema20 is not None:
+            rvol_confirmed = rvol20 > 1.1 and price_above_ema20
+        ema_stack_values = [ema20_above_ema50, ema50_above_ema100, ema100_above_ema200]
+        ema_stack_score = score_text(ema_stack_values, 3, summary.get("daily_ema_stack", "N/A"))
+
         sections = [
             (
                 "Period",
@@ -2755,61 +2821,77 @@ class StockApp:
                 ]
             ),
             (
-                "Bullish Structure",
+                "Score Totals",
                 [
                     ("Bullish Structure", trend_score_text, trend_score_color(trend_score), True),
-                    ("Confirmation", confirmation_score_text, confirmation_score_color(confirmation_score), True),
-                    ("Extended Total", extended_total_text, status_color(extended_rating), True),
-                    ("Trend", format_score_part("daily_trend_score_trend", 8), "#111827", False),
-                    ("Momentum", format_score_part("daily_trend_score_momentum", 3), "#111827", False),
-                    ("Quality", format_score_part("daily_trend_score_quality", 3), "#111827", False)
+                    ("Extended Total", extended_total_text, status_color(extended_rating), True)
                 ]
             ),
             (
-                "Trend",
+                "Trend Score",
                 [
-                    ("vs Daily EMA20", format_distance_state(summary.get("distance_daily_ema20")), distance_color(summary.get("distance_daily_ema20")), True),
-                    ("vs Daily SMA50", format_level_distance(summary.get("price_vs_daily_sma50", "n/a"), summary.get("distance_daily_sma50")), distance_color(summary.get("distance_daily_sma50")), True),
-                    ("vs Daily SMA200", format_level_distance(summary.get("price_vs_daily_sma200", "n/a"), summary.get("distance_daily_sma200")), distance_color(summary.get("distance_daily_sma200")), True),
-                    ("EMA Stack", summary.get("daily_ema_stack", "N/A"), status_color(summary.get("daily_ema_stack", "N/A")), False),
-                    ("EMA50 Trend", format_ema50_trend(), status_color(summary.get("daily_ema50_trend", "N/A")), False),
-                    ("Daily Cross", summary.get("daily_cross", "N/A"), status_color(summary.get("daily_cross", "N/A")), False)
+                    ("Price vs EMA20", bool_score_text(price_above_ema20, format_distance_state(summary.get("distance_daily_ema20"))), distance_color(summary.get("distance_daily_ema20")), True),
+                    ("Price vs SMA50", bool_score_text(price_above_sma50, format_level_distance(summary.get("price_vs_daily_sma50", "n/a"), summary.get("distance_daily_sma50"))), distance_color(summary.get("distance_daily_sma50")), True),
+                    ("Price vs SMA200", bool_score_text(price_above_sma200, format_level_distance(summary.get("price_vs_daily_sma200", "n/a"), summary.get("distance_daily_sma200"))), distance_color(summary.get("distance_daily_sma200")), True),
+                    ("EMA Stack", ema_stack_score, status_color(summary.get("daily_ema_stack", "N/A")), True),
+                    ("  EMA20 > EMA50", pass_fail_text(ema20_above_ema50), score_color(ema20_above_ema50), False),
+                    ("  EMA50 > EMA100", pass_fail_text(ema50_above_ema100), score_color(ema50_above_ema100), False),
+                    ("  EMA100 > EMA200", pass_fail_text(ema100_above_ema200), score_color(ema100_above_ema200), False),
+                    ("SMA50 > SMA200", bool_score_text(sma50_above_sma200, pass_fail_text(sma50_above_sma200)), score_color(sma50_above_sma200), True),
+                    ("EMA50 Trend", bool_score_text(ema50_rising, format_ema50_trend()), status_color(summary.get("daily_ema50_trend", "N/A")), False),
+                    ("Subtotal", format_score_part("daily_trend_score_trend", 8), "#111827", True)
                 ]
             ),
             (
-                "Momentum",
+                "Momentum Score",
                 [
                     (
-                        "RSI14",
-                        format_rsi14(),
-                        status_color("Above" if StockApp.is_valid_number(summary.get("daily_rsi14")) and summary.get("daily_rsi14") > 50 else "Below"),
+                        "RSI14 > 50",
+                        bool_score_text(rsi_above_50, format_rsi14()),
+                        score_color(rsi_above_50),
                         False
                     ),
                     (
                         "MACD vs Signal",
-                        summary.get("daily_macd_vs_signal", "N/A"),
-                        status_color(summary.get("daily_macd_vs_signal", "N/A")),
+                        bool_score_text(macd_above_signal, summary.get("daily_macd_vs_signal", "N/A")),
+                        score_color(macd_above_signal),
                         False
                     ),
                     (
                         "MACD vs 0",
-                        summary.get("daily_macd_zero", "N/A"),
-                        status_color(summary.get("daily_macd_zero", "N/A")),
+                        bool_score_text(macd_above_zero, summary.get("daily_macd_zero", "N/A")),
+                        score_color(macd_above_zero),
                         False
-                    )
+                    ),
+                    ("Subtotal", format_score_part("daily_trend_score_momentum", 3), "#111827", True)
                 ]
             ),
             (
-                "Volume & Risk",
+                "Quality Score",
+                [
+                    ("Volume vs SMA20", bool_score_text(volume_above_sma20, format_level_distance(summary.get("volume_vs_sma20", "N/A"), summary.get("distance_volume_sma20"))), distance_color(summary.get("distance_volume_sma20")), True),
+                    ("EMA20 Ext <=8%", bool_score_text(status_pass("daily_ema20_extension_state", "OK"), format_extension("daily_ema20_extension_state", "daily_ema20_extension")), status_color(summary.get("daily_ema20_extension_state", "N/A")), False),
+                    ("SMA200 Ext <=20%", bool_score_text(status_pass("daily_sma200_extension_state", "OK"), format_extension("daily_sma200_extension_state", "daily_sma200_extension")), status_color(summary.get("daily_sma200_extension_state", "N/A")), False),
+                    ("Subtotal", format_score_part("daily_trend_score_quality", 3), "#111827", True)
+                ]
+            ),
+            (
+                "Confirmation",
+                [
+                    ("RVOL20>1.1 + EMA20", bool_score_text(rvol_confirmed, pass_fail_text(rvol_confirmed)), score_color(rvol_confirmed), True),
+                    ("RVOL20", rvol20_text, rvol_color(rvol20), False),
+                    ("Volume vs SMA20", bool_score_text(volume_above_sma20, pass_fail_text(volume_above_sma20)), score_color(volume_above_sma20), True),
+                    ("ATR% Range", bool_score_text(status_pass("daily_atr_pct_state", "Healthy"), summary.get("daily_atr_pct_state", "N/A")), status_color(summary.get("daily_atr_pct_state", "N/A")), False),
+                    ("Subtotal", confirmation_score_text, confirmation_score_color(confirmation_score), True)
+                ]
+            ),
+            (
+                "Not Scored",
                 [
                     ("Volume Trend", summary.get("volume_trend", "Neutral"), status_color(summary.get("volume_trend", "Neutral")), True),
-                    ("Volume vs SMA20", format_level_distance(summary.get("volume_vs_sma20", "N/A"), summary.get("distance_volume_sma20")), distance_color(summary.get("distance_volume_sma20")), True),
-                    ("RVOL20", rvol20_text, rvol_color(rvol20), False),
-                    ("ATR% Range", summary.get("daily_atr_pct_state", "N/A"), status_color(summary.get("daily_atr_pct_state", "N/A")), False),
                     ("RVOL", rvol_text, rvol_color(current_rvol), False),
-                    ("ATR 14", atr_text, "#111827", False),
-                    ("EMA20 Extension", format_extension("daily_ema20_extension_state", "daily_ema20_extension"), status_color(summary.get("daily_ema20_extension_state", "N/A")), False),
-                    ("SMA200 Extension", format_extension("daily_sma200_extension_state", "daily_sma200_extension"), status_color(summary.get("daily_sma200_extension_state", "N/A")), False)
+                    ("ATR 14", atr_text, status_color(summary.get("daily_atr_pct_state", "N/A")), False),
+                    ("Daily Cross", summary.get("daily_cross", "N/A"), status_color(summary.get("daily_cross", "N/A")), False)
                 ]
             ),
             (
@@ -2850,7 +2932,7 @@ class StockApp:
             transform=ax.transAxes,
             ha="left",
             va="top",
-            fontsize=9.6,
+            fontsize=10.6,
             fontweight="bold",
             color="#111827",
             zorder=7
@@ -2858,15 +2940,15 @@ class StockApp:
 
         total_rows = sum(len(rows) for _section, rows in sections)
         total_sections = len(sections)
-        row_step = min(0.029, (card_height - 0.112) / max(total_rows + (total_sections * 0.98), 1))
-        row_step = max(row_step, 0.016)
-        title_rule_gap = row_step * 0.68
-        after_rule_gap = row_step * 0.20
-        section_gap = row_step * 0.22
-        section_font_size = 7.7 if row_step >= 0.019 else 7.1
-        row_font_size = 6.5 if row_step >= 0.019 else 6.0
+        row_step = min(0.030, (card_height - 0.094) / max(total_rows + (total_sections * 0.72), 1))
+        row_step = max(row_step, 0.0175)
+        title_rule_gap = row_step * 0.56
+        after_rule_gap = row_step * 0.12
+        section_gap = row_step * 0.12
+        section_font_size = 8.4 if row_step >= 0.0185 else 8.0
+        row_font_size = 7.2 if row_step >= 0.0185 else 6.9
 
-        row_y = card_top - 0.064
+        row_y = card_top - 0.058
         for section, section_rows in sections:
             if row_y < card_bottom + 0.014:
                 return
