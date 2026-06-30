@@ -3,7 +3,7 @@
 from typing import Any
 import pandas as pd
 from matplotlib.patches import FancyBboxPatch
-from .config import BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX
+from .config import CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX
 
 class SignalSummaryChartMixin:
     def add_signal_summary_box(
@@ -36,15 +36,6 @@ class SignalSummaryChartMixin:
             if normalized in {"mixed", "neutral", "n/a", "unknown", "watchlist"}:
                 return "#64748b"
             return "#0ea5e9"
-
-        def trend_score_color(value: int) -> str:
-            if value is None:
-                return "#64748b"
-            if value >= 9:
-                return "#16a34a"
-            if value <= 5:
-                return "#dc2626"
-            return "#64748b"
 
         def confirmation_score_color(value: int) -> str:
             if value is None:
@@ -111,9 +102,6 @@ class SignalSummaryChartMixin:
             return distance
         trend_score = summary.get("daily_trend_score")
         trend_label = summary.get("daily_trend", type(self).classify_trend_score(trend_score))
-        trend_score_max = summary.get("daily_trend_score_max", BULLISH_STRUCTURE_SCORE_MAX)
-        trend_score_text = "N/A" if trend_score is None else f"{int(trend_score)}/{trend_score_max} {trend_label}"
-        bullish_structure_score_text = "N/A" if trend_score is None else f"{int(trend_score)}/{trend_score_max}"
         confirmation_score = summary.get("confirmation_score")
         confirmation_max = summary.get("confirmation_max", CONFIRMATION_SCORE_MAX)
         extended_total_score = summary.get("extended_total_score")
@@ -477,8 +465,7 @@ class SignalSummaryChartMixin:
             {"type": "title", "label": "Signal Summary", "height": 1.62},
             {"type": "signal", "label": verdict_text, "color": verdict_color, "height": 1.66},
             {"type": "spacer", "height": 0.18},
-            header_metric_block("Bullish Structure", bullish_structure_score_text, layout["left_x"], layout["header_metric_value_x"], trend_score_color(trend_score)),
-            header_metric_block("Extended Score", extended_score_text, layout["left_x"], layout["header_metric_value_x"], verdict_color),
+            header_metric_block("Score", extended_score_text, layout["left_x"], layout["header_metric_value_x"], verdict_color),
             {"type": "divider", "height": 0.44},
             {"type": "key_reason_header", "label": "Key Reasons", "height": 1.12}
         ]
@@ -583,8 +570,8 @@ class SignalSummaryChartMixin:
             return artist
 
         def draw_header_metric(ax: Any, block: dict[str, Any]) -> float:
-            label_style = style_map["header_metric_label"]
-            value_style = style_map["header_metric_value"].copy()
+            label_style = style_map["section_header"]
+            value_style = style_map["section_header"].copy()
             value_style["color"] = block.get("color") or value_style["color"]
             add_text(
                 x=block["label_x"],
