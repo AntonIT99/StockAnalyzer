@@ -1,7 +1,5 @@
 from pathlib import Path
-
 import pandas as pd
-
 
 MAX_MOVING_AVERAGE_WINDOW = 200
 BULLISH_STRUCTURE_SCORE_MAX = 14
@@ -10,8 +8,9 @@ EXTENDED_BULLISH_SCORE_MAX = BULLISH_STRUCTURE_SCORE_MAX + CONFIRMATION_SCORE_MA
 ATR_PCT_HEALTHY_MIN = 0.01
 ATR_PCT_HEALTHY_MAX = 0.06
 DAILY_SIGNAL_PERIOD = "2y"
-CACHE_DIR = Path(__file__).with_name(".stock_cache")
-SETTINGS_PATH = Path(__file__).with_name(".stock_settings.json")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CACHE_DIR = PROJECT_ROOT / ".stock_cache"
+SETTINGS_PATH = PROJECT_ROOT / ".stock_settings.json"
 CUSTOM_PERIOD = "Custom"
 INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h"}
 COMPRESSED_AXIS_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d"}
