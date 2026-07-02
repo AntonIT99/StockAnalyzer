@@ -3,7 +3,7 @@
 from typing import Any
 import pandas as pd
 from matplotlib.patches import FancyBboxPatch
-from .config import CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX
+from .config import CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, TREND_STRUCTURE_SCORE_MAX
 
 class SignalSummaryChartMixin:
     def add_signal_summary_box(
@@ -135,13 +135,13 @@ class SignalSummaryChartMixin:
             normalized_title = title.lower()
             ratio = value / max_score if max_score else 0
             if normalized_title in {"trend", "trend structure"}:
-                if value >= 8:
+                if value >= 13:
                     return "Strongly Bullish"
-                if value >= 6:
+                if value >= 9:
                     return "Bullish"
-                if value >= 4:
+                if value >= 6:
                     return "Neutral / Mixed"
-                if value >= 2:
+                if value >= 4:
                     return "Slightly Bearish"
                 return "Bearish"
             if normalized_title == "momentum":
@@ -396,7 +396,7 @@ class SignalSummaryChartMixin:
                 ]
             ),
             (
-                score_header("Trend Structure", "daily_trend_score_trend", 8),
+                score_header("Trend Structure", "daily_trend_score_trend", TREND_STRUCTURE_SCORE_MAX),
                 [
                     subgroup_header(layer_title("Fast", "fast_trend_horizon"), trend_layer_score_text("short_term_trend_score", "short_term_trend_label"), trend_layer_color("short_term_trend_label"), trend_layer_header_height),
                     metric_row(hierarchy_text(summary.get("fast_trend_hierarchy", "Not enough data")), "", trend_layer_hierarchy_color("short_term_trend_label"), False, 1, trend_detail_height, trend_layer_hierarchy_color("short_term_trend_label")),

@@ -2,7 +2,7 @@
 
 from typing import Any
 import pandas as pd
-from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX
+from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, TREND_STRUCTURE_SCORE_MAX
 
 class TechnicalAnalysisMixin:
     @staticmethod
@@ -67,7 +67,7 @@ class TechnicalAnalysisMixin:
         return score is not None and score <= 2
 
     @classmethod
-    def calculate_weighted_trend_score(
+    def calculate_trend_structure_score(
         cls,
         short_term_score: int | None,
         medium_term_score: int | None,
@@ -75,15 +75,7 @@ class TechnicalAnalysisMixin:
     ) -> int | None:
         if short_term_score is None and medium_term_score is None and long_term_score is None:
             return None
-        short_term = 3 if short_term_score is None else short_term_score
-        medium_term = 3 if medium_term_score is None else medium_term_score
-        long_term = 3 if long_term_score is None else long_term_score
-        weighted_score = (
-            (short_term / 5) * 2
-            + (medium_term / 5) * 3
-            + (long_term / 5) * 3
-        )
-        return int(weighted_score + 0.5)
+        return sum(score or 0 for score in (short_term_score, medium_term_score, long_term_score))
 
     @classmethod
     def classify_trend_phase(
@@ -277,6 +269,26 @@ class TechnicalAnalysisMixin:
                 "fast": "~5 months",
                 "intermediate": "~1-2 years",
                 "slow": "~4 years"
+            },
+            "1mo": {
+                "fast": "~2 years",
+                "intermediate": "~4-8 years",
+                "slow": "~17 years"
+            },
+            "3mo": {
+                "fast": "~5 years",
+                "intermediate": "~12-25 years",
+                "slow": "~50 years"
+            },
+            "6mo": {
+                "fast": "~10 years",
+                "intermediate": "~25-50 years",
+                "slow": "~100 years"
+            },
+            "1y": {
+                "fast": "~20 years",
+                "intermediate": "~50-100 years",
+                "slow": "~200 years"
             }
         }
         interval_key = str(interval or "").lower()
@@ -400,31 +412,47 @@ class TechnicalAnalysisMixin:
         trend_phase: str = "N/A",
         trend_direction: str | None = None
     ) -> str:
+        return cls.classify_score_percentage(
+            score,
+            BULLISH_STRUCTURE_SCORE_MAX,
+            trend_score=trend_score,
+            short_term_score=short_term_score,
+            medium_term_score=medium_term_score,
+            long_term_score=long_term_score,
+            momentum_score=momentum_score,
+            trend_phase=trend_phase,
+            trend_direction=trend_direction
+        )
+
+    @classmethod
+    def classify_score_percentage(
+        cls,
+        score: int | None,
+        max_score: int,
+        trend_score: int | None = None,
+        short_term_score: int | None = None,
+        medium_term_score: int | None = None,
+        long_term_score: int | None = None,
+        momentum_score: int | None = None,
+        confirmation_score: int | None = None,
+        trend_phase: str = "N/A",
+        trend_direction: str | None = None
+    ) -> str:
         if score is None:
             return "N/A"
+        ratio = score / max_score if max_score else 0
         recovery_phase = trend_phase in {"Early Recovery", "Recovery Attempt"}
-        if score >= 12:
-            if recovery_phase:
-                return trend_phase
-            if trend_phase != "Confirmed Uptrend":
-                return "Bullish"
-            return "Strong Bullish"
-        if score >= 9:
-            if recovery_phase:
-                return trend_phase
-            return "Bullish"
-        if score >= 6:
-            if recovery_phase:
-                return trend_phase
-            return "Neutral / Transition"
         if recovery_phase and trend_direction != "Deteriorating":
             return trend_phase
+        if trend_phase == "Pullback" and trend_direction != "Improving":
+            return "Pullback"
         if cls.is_strongly_bearish_setup(
             short_term_score,
             medium_term_score,
             long_term_score,
             momentum_score=momentum_score,
-            trend_direction=trend_direction
+            trend_direction=trend_direction,
+            confirmation_score=confirmation_score
         ):
             return "Strongly Bearish"
         if (
@@ -432,9 +460,19 @@ class TechnicalAnalysisMixin:
             and cls.trend_layer_is_bearish(long_term_score)
         ):
             return "Bearish, Improving" if trend_direction == "Improving" else "Mixed Bearish"
-        if trend_direction == "Improving" and trend_score is not None and trend_score <= 3:
-            return "Bearish, Improving"
-        return "Bearish"
+        if ratio <= 0.20:
+            return "Bearish, Improving" if trend_direction == "Improving" else "Bearish"
+        if ratio <= 0.35:
+            return "Bearish, Improving" if trend_direction == "Improving" else "Bearish"
+        if ratio <= 0.45:
+            return "Bearish, Improving" if trend_direction == "Improving" else "Weak Recovery"
+        if ratio <= 0.55:
+            return "Neutral / Transition"
+        if ratio <= 0.65:
+            return "Constructive / Improving"
+        if ratio <= 0.80:
+            return "Bullish"
+        return "Strongly Bullish"
 
     @classmethod
     def classify_trend_score(cls, score: int | None) -> str:
@@ -453,42 +491,18 @@ class TechnicalAnalysisMixin:
         trend_phase: str = "N/A",
         trend_direction: str | None = None
     ) -> str:
-        if score is None:
-            return "N/A"
-        recovery_phase = trend_phase in {"Early Recovery", "Recovery Attempt"}
-        if score >= 15:
-            if recovery_phase:
-                return trend_phase
-            if trend_phase != "Confirmed Uptrend":
-                return "Bullish Confirmed"
-            return "Strong Bullish Confirmed"
-        if score >= 12:
-            if recovery_phase:
-                return trend_phase
-            return "Bullish Confirmed"
-        if score >= 8:
-            if recovery_phase:
-                return trend_phase
-            return "Neutral / Transition"
-        if recovery_phase and trend_direction != "Deteriorating":
-            return trend_phase
-        if cls.is_strongly_bearish_setup(
-            short_term_score,
-            medium_term_score,
-            long_term_score,
+        return cls.classify_score_percentage(
+            score,
+            EXTENDED_BULLISH_SCORE_MAX,
+            trend_score=trend_score,
+            short_term_score=short_term_score,
+            medium_term_score=medium_term_score,
+            long_term_score=long_term_score,
             momentum_score=momentum_score,
-            trend_direction=trend_direction,
-            confirmation_score=confirmation_score
-        ):
-            return "Strongly Bearish"
-        if (
-            cls.trend_layer_is_bullish(short_term_score)
-            and cls.trend_layer_is_bearish(long_term_score)
-        ):
-            return "Bearish, Improving" if trend_direction == "Improving" else "Mixed Bearish"
-        if trend_direction == "Improving" and trend_score is not None and trend_score <= 3:
-            return "Bearish, Improving"
-        return "Bearish"
+            confirmation_score=confirmation_score,
+            trend_phase=trend_phase,
+            trend_direction=trend_direction
+        )
 
     @staticmethod
     def calculate_investment_view(business_health: str, valuation: str, trend: str) -> str:
@@ -621,7 +635,7 @@ class TechnicalAnalysisMixin:
         short_term_score = cls.score_optional_checks(short_term_checks, 5, min_valid=3)
         medium_term_score = cls.score_optional_checks(medium_term_checks, 5, min_valid=3)
         long_term_score = cls.score_optional_checks(long_term_checks, 5, min_valid=3)
-        trend_score = cls.calculate_weighted_trend_score(
+        trend_score = cls.calculate_trend_structure_score(
             short_term_score,
             medium_term_score,
             long_term_score
@@ -762,6 +776,7 @@ class TechnicalAnalysisMixin:
             "daily_trend_score": None,
             "daily_trend_score_max": BULLISH_STRUCTURE_SCORE_MAX,
             "daily_trend_score_trend": None,
+            "daily_trend_score_trend_max": TREND_STRUCTURE_SCORE_MAX,
             "short_term_trend_score": None,
             "short_term_trend_label": "N/A",
             "medium_term_trend_score": None,
@@ -958,6 +973,7 @@ class TechnicalAnalysisMixin:
             "daily_trend_score": total_score,
             "daily_trend_score_max": structure_score["max_score"],
             "daily_trend_score_trend": structure_score["trend_score"],
+            "daily_trend_score_trend_max": TREND_STRUCTURE_SCORE_MAX,
             "short_term_trend_score": structure_score["short_term_trend_score"],
             "short_term_trend_label": structure_score["short_term_trend_label"],
             "medium_term_trend_score": structure_score["medium_term_trend_score"],
@@ -1203,7 +1219,8 @@ class TechnicalAnalysisMixin:
         if not baseline_summary:
             return []
         score_specs = [
-            ("Trend", "daily_trend_score_trend", 8),
+            ("Score", "extended_total_score", "extended_max_score"),
+            ("Trend", "daily_trend_score_trend", "daily_trend_score_trend_max"),
             ("Momentum", "daily_trend_score_momentum", 3),
             ("Setup Quality", "daily_trend_score_quality", 3),
             ("Confirmation", "confirmation_score", "confirmation_max")
