@@ -27,24 +27,15 @@ class SignalSummaryChartMixin:
 
         def status_color(value: str) -> str:
             normalized = str(value).lower()
-            if normalized in {"above", "above signal", "above 0", "rising", "bullish", "strong bullish", "bullish confirmed", "strong bullish confirmed", "golden cross", "golden state", "cheap", "strong", "confirmed", "excellent", "good", "stable", "attractive", "ok", "healthy"}:
+            if normalized in {"above", "above signal", "above 0", "rising", "bullish", "strong bullish", "strongly bullish", "bullish confirmed", "strong bullish confirmed", "confirmed uptrend", "golden cross", "golden state", "cheap", "strong", "confirmed", "excellent", "good", "attractive", "ok", "healthy", "improving"}:
                 return "#16a34a"
-            if normalized in {"partial", "moderate", "fair"}:
+            if normalized in {"partial", "moderate", "fair", "slightly bearish", "neutral / mixed", "mixed", "neutral / transition", "mixed / transition", "early recovery", "recovery attempt", "bearish, improving", "mixed bearish", "pullback", "stable", "cross neutral"}:
                 return "#f97316"
-            if normalized in {"below", "below signal", "below 0", "falling", "bearish", "strong bearish", "strongly bearish", "weak / bearish", "death cross", "death state", "expensive", "weak", "none", "poor", "risky", "extended", "outside range"}:
+            if normalized in {"below", "below signal", "below 0", "falling", "bearish", "strong bearish", "strongly bearish", "confirmed downtrend", "weak / bearish", "death cross", "death state", "deteriorating", "expensive", "weak", "none", "poor", "risky", "extended", "outside range"}:
                 return "#dc2626"
             if normalized in {"mixed", "neutral", "n/a", "unknown", "watchlist"}:
                 return "#64748b"
             return "#0ea5e9"
-
-        def confirmation_score_color(value: int) -> str:
-            if value is None:
-                return "#64748b"
-            if value >= 3:
-                return "#16a34a"
-            if value <= 1:
-                return "#dc2626"
-            return "#64748b"
 
         def distance_color(value: float | None, positive_is_good: bool = True) -> str:
             if value is None or pd.isna(value):
@@ -84,12 +75,6 @@ class SignalSummaryChartMixin:
         def format_signed_percent(value: float | None) -> str:
             return self.format_summary_percent(value)
 
-        def format_ema50_trend() -> str:
-            ema50_change = self.format_summary_percent(summary.get("daily_ema50_change_20"))
-            if ema50_change == "N/A":
-                return summary.get("daily_ema50_trend", "N/A")
-            return f"{summary.get('daily_ema50_trend', 'N/A')} {ema50_change}"
-
         def format_rsi14() -> str:
             rsi = summary.get("daily_rsi14")
             return "N/A" if rsi is None or pd.isna(rsi) else f"{rsi:.1f}"
@@ -111,6 +96,8 @@ class SignalSummaryChartMixin:
         extended_score_text = "N/A" if extended_total_score is None else f"{int(extended_total_score)}/{extended_max_score}"
         rvol20 = summary.get("daily_rvol20")
         rvol20_text = "N/A" if rvol20 is None or pd.isna(rvol20) else f"{rvol20:.2f}x"
+        trend_phase = summary.get("trend_phase", "N/A")
+        trend_direction = summary.get("trend_direction", "Stable")
 
         def score_color(passed: bool | None) -> str:
             if passed is None:
@@ -121,25 +108,6 @@ class SignalSummaryChartMixin:
             if passed is None:
                 return "—"
             return "✓" if passed else "✗"
-
-        def bool_score_text(passed: bool | None, text: str) -> str:
-            if passed is None:
-                return f"N/A {text}"
-            return f"{1 if passed else 0}/1 {text}"
-
-        def compact_count_score_text(passed_values: list[bool | None], max_score: int) -> str:
-            valid_values = [value for value in passed_values if value is not None]
-            if not valid_values:
-                return "N/A"
-            passed_count = sum(1 for value in valid_values if value)
-            return f"{passed_count}/{max_score}"
-
-        def count_score_color(passed_values: list[bool | None], max_score: int) -> str:
-            valid_values = [value for value in passed_values if value is not None]
-            if not valid_values:
-                return "#64748b"
-            passed_count = sum(1 for value in valid_values if value)
-            return status_color(score_label(passed_count, max_score))
 
         def score_label(value: int | None, max_score: int, confirmation: bool = False) -> str:
             if value is None:
@@ -166,11 +134,15 @@ class SignalSummaryChartMixin:
                 return "N/A"
             normalized_title = title.lower()
             ratio = value / max_score if max_score else 0
-            if normalized_title == "trend":
-                if ratio >= 0.75:
+            if normalized_title in {"trend", "trend structure"}:
+                if value >= 8:
+                    return "Strongly Bullish"
+                if value >= 6:
                     return "Bullish"
-                if ratio >= 0.50:
-                    return "Neutral"
+                if value >= 4:
+                    return "Neutral / Mixed"
+                if value >= 2:
+                    return "Slightly Bearish"
                 return "Bearish"
             if normalized_title == "momentum":
                 if value >= max_score:
@@ -204,6 +176,30 @@ class SignalSummaryChartMixin:
             color = status_color(label)
             return {"title": title, "score": f"{int(value)}/{max_score} {label}", "color": color}
 
+        def trend_layer_score_text(score_key: str, label_key: str) -> str:
+            value = summary.get(score_key)
+            label = summary.get(label_key, "N/A")
+            if value is None:
+                return "N/A"
+            return f"{int(value)}/5 {label}"
+
+        def trend_layer_color(label_key: str) -> str:
+            return status_color(summary.get(label_key, "N/A"))
+
+        def trend_state_color(value: str) -> str:
+            text = str(value)
+            if "Death Cross" in text or "\u2198" in text:
+                return "#dc2626"
+            if "Golden Cross" in text or "\u2197" in text:
+                return "#16a34a"
+            if "N/A" in text or "Not enough data" in text or "Neutral" in text or "\u2192" in text:
+                return "#64748b"
+            return status_color(text)
+
+        def layer_title(label: str, horizon_key: str) -> str:
+            horizon = summary.get(horizon_key, "")
+            return f"{label} ({horizon})" if horizon else label
+
         def valid_distance_pass(key: str) -> bool | None:
             value = summary.get(key)
             if value is None or pd.isna(value):
@@ -218,11 +214,7 @@ class SignalSummaryChartMixin:
         price_above_ema20 = valid_distance_pass("distance_daily_ema20")
         price_above_sma50 = valid_distance_pass("distance_daily_sma50")
         price_above_sma200 = valid_distance_pass("distance_daily_sma200")
-        ema20_above_ema50 = status_pass("daily_ema20_vs_ema50")
-        ema50_above_ema100 = status_pass("daily_ema50_vs_ema100")
-        ema100_above_ema200 = status_pass("daily_ema100_vs_ema200")
         sma50_above_sma200 = status_pass("daily_sma50_vs_sma200")
-        ema50_rising = status_pass("daily_ema50_trend", "Rising")
         rsi_above_50 = None
         if type(self).is_valid_number(summary.get("daily_rsi14")):
             rsi_above_50 = summary.get("daily_rsi14") > 50
@@ -232,33 +224,63 @@ class SignalSummaryChartMixin:
         rvol_confirmed = None
         if type(self).is_valid_number(rvol20) and price_above_ema20 is not None:
             rvol_confirmed = rvol20 > 1.1 and price_above_ema20
-        ema_stack_values = [ema20_above_ema50, ema50_above_ema100, ema100_above_ema200]
-        ema_stack_score = compact_count_score_text(ema_stack_values, 3)
-        price_position_values = [price_above_ema20, price_above_sma50, price_above_sma200]
-        price_position_score = compact_count_score_text(price_position_values, 3)
-        long_term_trend_values = [sma50_above_sma200, ema50_rising]
-        long_term_trend_score = compact_count_score_text(long_term_trend_values, 2)
+        short_term_score_value = summary.get("short_term_trend_score")
+        medium_term_score_value = summary.get("medium_term_trend_score")
+        long_term_score_value = summary.get("long_term_trend_score")
+        short_term_bullish = type(self).trend_layer_is_bullish(short_term_score_value)
+        medium_term_bullish = type(self).trend_layer_is_bullish(medium_term_score_value)
+        medium_term_bearish = type(self).trend_layer_is_bearish(medium_term_score_value)
+        long_term_bullish = type(self).trend_layer_is_bullish(long_term_score_value)
+        long_term_bearish = type(self).trend_layer_is_bearish(long_term_score_value)
         key_reasons = []
 
         def add_key_reason(reason: str) -> None:
             if reason and reason not in key_reasons:
                 key_reasons.append(reason)
-        if summary.get("daily_ema_stack") == "Bearish":
-            add_key_reason("Major bearish trend confirmed")
-        elif summary.get("daily_ema_stack") == "Bullish":
-            add_key_reason("Major bullish trend confirmed")
-        if price_above_ema20 is False and price_above_sma200 is False:
+
+        if trend_phase in {"Early Recovery", "Recovery Attempt"}:
+            add_key_reason("Fast trend recovery attempt")
+        elif trend_phase == "Pullback":
+            add_key_reason("Fast trend pullback")
+        elif trend_phase == "Confirmed Uptrend":
+            add_key_reason("All trend layers bullish")
+        elif trend_phase == "Confirmed Downtrend":
+            add_key_reason("Trend layers remain bearish")
+        elif short_term_bullish and long_term_bearish:
+            add_key_reason("Fast trend recovery attempt")
+        if trend_direction == "Improving":
+            add_key_reason("Trend structure improving")
+        elif trend_direction == "Deteriorating":
+            add_key_reason("Trend structure deteriorating")
+        if price_above_ema20 is True and price_above_sma200 is False:
+            add_key_reason("Price above EMA20 but below SMA200")
+        elif price_above_ema20 is False and price_above_sma200 is False:
             add_key_reason("Price below EMA20 and SMA200")
         elif price_above_ema20 is True and price_above_sma200 is True:
             add_key_reason("Price above EMA20 and SMA200")
         elif price_above_ema20 is False:
             add_key_reason("Price below EMA20")
         elif price_above_sma200 is False:
-            add_key_reason("Price below long-term average")
+            add_key_reason("Price below slow average")
         elif price_above_ema20 is True:
             add_key_reason("Price above EMA20")
         elif price_above_sma200 is True:
-            add_key_reason("Price above long-term average")
+            add_key_reason("Price above slow average")
+        if long_term_bearish:
+            add_key_reason("Slow trend remains bearish")
+        elif long_term_bullish:
+            add_key_reason("Slow trend still bullish")
+        if short_term_bullish and not medium_term_bullish:
+            add_key_reason("Intermediate trend not confirmed yet")
+        elif medium_term_bearish:
+            add_key_reason("Intermediate trend remains bearish")
+        elif medium_term_bullish and long_term_bearish:
+            add_key_reason("Intermediate recovery not confirmed by slow trend")
+        daily_cross = summary.get("daily_cross", "N/A")
+        if daily_cross in {"Death Cross", "Death State"}:
+            add_key_reason("Death cross remains active")
+        elif daily_cross in {"Golden Cross", "Golden State"}:
+            add_key_reason("Golden cross remains active")
         if rsi_above_50 is False and (macd_above_signal is False or macd_above_zero is False):
             add_key_reason("Momentum remains weak")
         elif rsi_above_50 is True and macd_above_signal is True:
@@ -271,18 +293,14 @@ class SignalSummaryChartMixin:
             add_key_reason("RSI remains below 50")
         elif rsi_above_50 is True:
             add_key_reason("RSI holds above 50")
-        if sma50_above_sma200 is False:
-            add_key_reason("Long-term cross remains bearish")
-        elif sma50_above_sma200 is True:
-            add_key_reason("Long-term cross remains bullish")
         if price_above_sma50 is False:
             add_key_reason("Price below SMA50")
         elif price_above_sma50 is True:
             add_key_reason("Price above SMA50")
         if volume_above_sma20 is False:
-            add_key_reason("Volume below 20-day average")
+            add_key_reason("Volume below 20-bar average")
         elif volume_above_sma20 is True:
-            add_key_reason("Volume above 20-day average")
+            add_key_reason("Volume above 20-bar average")
         key_reasons = [reason for reason in key_reasons if reason][:6]
 
         def format_rvol_diagnostic(value: float | None) -> str:
@@ -309,7 +327,8 @@ class SignalSummaryChartMixin:
             value: str,
             color: str = "#111827",
             bold_value: bool = False,
-            indent: int = 0
+            indent: int = 0,
+            height: float = 1.0
         ) -> dict[str, Any]:
             return {
                 "kind": "metric",
@@ -317,11 +336,13 @@ class SignalSummaryChartMixin:
                 "value": value,
                 "color": color,
                 "bold_value": bold_value,
-                "indent": indent
+                "indent": indent,
+                "height": height
             }
 
         def subgroup_header(label: str, value: str | None = None, color: str | None = None) -> dict[str, Any]:
             return {"kind": "subgroup", "label": label, "value": value, "color": color}
+        trend_detail_color = "#64748b"
         sections = [
             (
                 "Period",
@@ -334,19 +355,19 @@ class SignalSummaryChartMixin:
                 ]
             ),
             (
-                score_header("Trend", "daily_trend_score_trend", 8),
+                score_header("Trend Structure", "daily_trend_score_trend", 8),
                 [
-                    subgroup_header("Price Position", price_position_score, count_score_color(price_position_values, 3)),
-                    metric_row("Price vs EMA20", format_signed_percent(summary.get("distance_daily_ema20")), distance_color(summary.get("distance_daily_ema20")), True, 1),
-                    metric_row("Price vs SMA50", format_signed_percent(summary.get("distance_daily_sma50")), distance_color(summary.get("distance_daily_sma50")), True, 1),
-                    metric_row("Price vs SMA200", format_signed_percent(summary.get("distance_daily_sma200")), distance_color(summary.get("distance_daily_sma200")), True, 1),
-                    subgroup_header("EMA Structure", ema_stack_score, count_score_color(ema_stack_values, 3)),
-                    metric_row("EMA20 > EMA50", status_symbol(ema20_above_ema50), score_color(ema20_above_ema50), False, 1),
-                    metric_row("EMA50 > EMA100", status_symbol(ema50_above_ema100), score_color(ema50_above_ema100), False, 1),
-                    metric_row("EMA100 > EMA200", status_symbol(ema100_above_ema200), score_color(ema100_above_ema200), False, 1),
-                    subgroup_header("Long-Term Trend", long_term_trend_score, count_score_color(long_term_trend_values, 2)),
-                    metric_row("Daily Cross (SMA50 > SMA200)", summary.get("daily_cross", "N/A"), score_color(sma50_above_sma200), True, 1),
-                    metric_row("EMA50 Trend", format_ema50_trend(), status_color(summary.get("daily_ema50_trend", "N/A")), False, 1)
+                    metric_row(layer_title("Fast", "fast_trend_horizon"), trend_layer_score_text("short_term_trend_score", "short_term_trend_label"), trend_layer_color("short_term_trend_label"), True),
+                    metric_row(summary.get("fast_trend_hierarchy", "Not enough data"), "", trend_detail_color, False, 1, 0.82),
+                    metric_row(summary.get("fast_trend_state", "EMA20 N/A"), "", trend_state_color(summary.get("fast_trend_state", "EMA20 N/A")), False, 1, 0.82),
+                    metric_row(layer_title("Intermediate", "intermediate_trend_horizon"), trend_layer_score_text("medium_term_trend_score", "medium_term_trend_label"), trend_layer_color("medium_term_trend_label"), True),
+                    metric_row(summary.get("intermediate_trend_hierarchy", "Not enough data"), "", trend_detail_color, False, 1, 0.82),
+                    metric_row(summary.get("intermediate_trend_state", "EMA50 N/A"), "", trend_state_color(summary.get("intermediate_trend_state", "EMA50 N/A")), False, 1, 0.82),
+                    metric_row(layer_title("Slow", "slow_trend_horizon"), trend_layer_score_text("long_term_trend_score", "long_term_trend_label"), trend_layer_color("long_term_trend_label"), True),
+                    metric_row(summary.get("slow_trend_hierarchy", "Not enough data"), "", trend_detail_color, False, 1, 0.82),
+                    metric_row(summary.get("slow_trend_state", "Cross Neutral"), "", trend_state_color(summary.get("slow_trend_state", "Cross Neutral")), False, 1, 0.82),
+                    metric_row("Phase", trend_phase, status_color(trend_phase), True),
+                    metric_row("Direction", trend_direction, status_color(trend_direction), True)
                 ]
             ),
             (
@@ -399,7 +420,7 @@ class SignalSummaryChartMixin:
         card_top = card_bottom + card_height
         verdict_color = status_color(verdict_text)
         score_change_groups = [
-            ("Since Last Day", summary.get("score_changes_last_day", [])),
+            ("Since Previous Bar", summary.get("score_changes_last_day", [])),
             ("Since Period Start", summary.get("score_changes_period_start", []))
         ]
         layout = {
@@ -524,7 +545,7 @@ class SignalSummaryChartMixin:
                         "color": row.get("color"),
                         "bold": row.get("bold_value", False),
                         "indent": row.get("indent", 0),
-                        "height": 1.0
+                        "height": row.get("height", 1.0)
                     })
             blocks.append({"type": "spacer", "height": 0.44})
         available_height = card_height - layout["top_pad"] - layout["bottom_pad"]

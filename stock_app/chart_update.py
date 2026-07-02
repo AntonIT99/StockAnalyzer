@@ -57,7 +57,8 @@ class ChartUpdateMixin:
             daily_signal_data,
             fundamental_metrics,
             daily_summary_as_of=visible_end,
-            period_start_as_of=visible_start
+            period_start_as_of=visible_start,
+            interval=self.interval_var.get()
         )
         spike_times = self.get_spike_times(data) if self.show_volume.get() else pd.Index([])
         earnings_events = pd.DataFrame(columns=["date", "surprise", "label"])
