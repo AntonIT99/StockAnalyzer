@@ -181,10 +181,32 @@ class SignalSummaryChartMixin:
             label = summary.get(label_key, "N/A")
             if value is None:
                 return "N/A"
-            return f"{int(value)}/5 {label}"
+            return f"{int(value)}/5 • {label}"
 
         def trend_layer_color(label_key: str) -> str:
             return status_color(summary.get(label_key, "N/A"))
+
+        def trend_layer_hierarchy_color(label_key: str) -> str:
+            normalized = str(summary.get(label_key, "N/A")).lower()
+            if normalized in {"strongly bullish", "bullish"}:
+                return "#16a34a"
+            if normalized in {"mixed", "neutral", "neutral / mixed", "slightly bearish"}:
+                return "#f97316"
+            if normalized in {"bearish", "strongly bearish"}:
+                return "#dc2626"
+            return "#64748b"
+
+        def hierarchy_text(value: str) -> str:
+            text = str(value or "Not enough data")
+            if text == "Not enough data":
+                return text
+            parts = [part.strip() for part in text.replace("›", ">").split(">")]
+            formatted_parts = [
+                "[Price]" if part == "Price" else part
+                for part in parts
+                if part
+            ]
+            return " › ".join(formatted_parts) if formatted_parts else "Not enough data"
 
         def trend_state_color(value: str) -> str:
             text = str(value)
@@ -199,6 +221,14 @@ class SignalSummaryChartMixin:
         def layer_title(label: str, horizon_key: str) -> str:
             horizon = summary.get(horizon_key, "")
             return f"{label} ({horizon})" if horizon else label
+
+        def phase_direction_text(phase: str, direction: str) -> str:
+            arrows = {
+                "Improving": "\u2191",
+                "Deteriorating": "\u2193",
+                "Stable": "\u2192"
+            }
+            return f"{phase} {arrows.get(direction, '\u2192')}"
 
         def valid_distance_pass(key: str) -> bool | None:
             value = summary.get(key)
@@ -328,7 +358,8 @@ class SignalSummaryChartMixin:
             color: str = "#111827",
             bold_value: bool = False,
             indent: int = 0,
-            height: float = 1.0
+            height: float = 1.0,
+            label_color: str | None = None
         ) -> dict[str, Any]:
             return {
                 "kind": "metric",
@@ -337,12 +368,22 @@ class SignalSummaryChartMixin:
                 "color": color,
                 "bold_value": bold_value,
                 "indent": indent,
-                "height": height
+                "height": height,
+                "label_color": label_color
             }
 
-        def subgroup_header(label: str, value: str | None = None, color: str | None = None) -> dict[str, Any]:
-            return {"kind": "subgroup", "label": label, "value": value, "color": color}
-        trend_detail_color = "#64748b"
+        def subgroup_header(
+            label: str,
+            value: str | None = None,
+            color: str | None = None,
+            height: float = 1.02
+        ) -> dict[str, Any]:
+            return {"kind": "subgroup", "label": label, "value": value, "color": color, "height": height}
+
+        def row_spacer(height: float = 0.18) -> dict[str, Any]:
+            return {"kind": "spacer", "height": height}
+        trend_layer_header_height = 1.22
+        trend_detail_height = 1.04
         sections = [
             (
                 "Period",
@@ -357,17 +398,20 @@ class SignalSummaryChartMixin:
             (
                 score_header("Trend Structure", "daily_trend_score_trend", 8),
                 [
-                    metric_row(layer_title("Fast", "fast_trend_horizon"), trend_layer_score_text("short_term_trend_score", "short_term_trend_label"), trend_layer_color("short_term_trend_label"), True),
-                    metric_row(summary.get("fast_trend_hierarchy", "Not enough data"), "", trend_detail_color, False, 1, 0.82),
-                    metric_row(summary.get("fast_trend_state", "EMA20 N/A"), "", trend_state_color(summary.get("fast_trend_state", "EMA20 N/A")), False, 1, 0.82),
-                    metric_row(layer_title("Intermediate", "intermediate_trend_horizon"), trend_layer_score_text("medium_term_trend_score", "medium_term_trend_label"), trend_layer_color("medium_term_trend_label"), True),
-                    metric_row(summary.get("intermediate_trend_hierarchy", "Not enough data"), "", trend_detail_color, False, 1, 0.82),
-                    metric_row(summary.get("intermediate_trend_state", "EMA50 N/A"), "", trend_state_color(summary.get("intermediate_trend_state", "EMA50 N/A")), False, 1, 0.82),
-                    metric_row(layer_title("Slow", "slow_trend_horizon"), trend_layer_score_text("long_term_trend_score", "long_term_trend_label"), trend_layer_color("long_term_trend_label"), True),
-                    metric_row(summary.get("slow_trend_hierarchy", "Not enough data"), "", trend_detail_color, False, 1, 0.82),
-                    metric_row(summary.get("slow_trend_state", "Cross Neutral"), "", trend_state_color(summary.get("slow_trend_state", "Cross Neutral")), False, 1, 0.82),
-                    metric_row("Phase", trend_phase, status_color(trend_phase), True),
-                    metric_row("Direction", trend_direction, status_color(trend_direction), True)
+                    subgroup_header(layer_title("Fast", "fast_trend_horizon"), trend_layer_score_text("short_term_trend_score", "short_term_trend_label"), trend_layer_color("short_term_trend_label"), trend_layer_header_height),
+                    metric_row(hierarchy_text(summary.get("fast_trend_hierarchy", "Not enough data")), "", trend_layer_hierarchy_color("short_term_trend_label"), False, 1, trend_detail_height, trend_layer_hierarchy_color("short_term_trend_label")),
+                    metric_row(summary.get("fast_trend_state", "EMA20 N/A"), "", trend_state_color(summary.get("fast_trend_state", "EMA20 N/A")), False, 1, trend_detail_height, trend_state_color(summary.get("fast_trend_state", "EMA20 N/A"))),
+                    row_spacer(),
+                    subgroup_header(layer_title("Intermediate", "intermediate_trend_horizon"), trend_layer_score_text("medium_term_trend_score", "medium_term_trend_label"), trend_layer_color("medium_term_trend_label"), trend_layer_header_height),
+                    metric_row(hierarchy_text(summary.get("intermediate_trend_hierarchy", "Not enough data")), "", trend_layer_hierarchy_color("medium_term_trend_label"), False, 1, trend_detail_height, trend_layer_hierarchy_color("medium_term_trend_label")),
+                    metric_row(summary.get("intermediate_trend_state", "EMA50 N/A"), "", trend_state_color(summary.get("intermediate_trend_state", "EMA50 N/A")), False, 1, trend_detail_height, trend_state_color(summary.get("intermediate_trend_state", "EMA50 N/A"))),
+                    row_spacer(),
+                    subgroup_header(layer_title("Slow", "slow_trend_horizon"), trend_layer_score_text("long_term_trend_score", "long_term_trend_label"), trend_layer_color("long_term_trend_label"), trend_layer_header_height),
+                    metric_row(hierarchy_text(summary.get("slow_trend_hierarchy", "Not enough data")), "", trend_layer_hierarchy_color("long_term_trend_label"), False, 1, trend_detail_height, trend_layer_hierarchy_color("long_term_trend_label")),
+                    metric_row(summary.get("slow_trend_cross_state", "Cross Neutral"), "", trend_state_color(summary.get("slow_trend_cross_state", "Cross Neutral")), False, 1, trend_detail_height, trend_state_color(summary.get("slow_trend_cross_state", "Cross Neutral"))),
+                    metric_row(summary.get("slow_trend_sma200_state", "SMA200 N/A"), "", trend_state_color(summary.get("slow_trend_sma200_state", "SMA200 N/A")), False, 1, trend_detail_height, trend_state_color(summary.get("slow_trend_sma200_state", "SMA200 N/A"))),
+                    row_spacer(0.24),
+                    subgroup_header("Phase", phase_direction_text(trend_phase, trend_direction), status_color(trend_phase), 1.12)
                 ]
             ),
             (
@@ -419,8 +463,9 @@ class SignalSummaryChartMixin:
         card_right = card_left + card_width
         card_top = card_bottom + card_height
         verdict_color = status_color(verdict_text)
+        previous_change_title = f"Since {summary.get('score_changes_previous_title', 'Previous Bar')}"
         score_change_groups = [
-            ("Since Previous Bar", summary.get("score_changes_last_day", [])),
+            (previous_change_title, summary.get("score_changes_last_day", [])),
             ("Since Period Start", summary.get("score_changes_period_start", []))
         ]
         layout = {
@@ -439,12 +484,12 @@ class SignalSummaryChartMixin:
             "signal_font_size": 12.4,
             "header_metric_font_size": 7.3,
             "section_font_size": 8.0,
-            "subgroup_font_size": 6.4,
+            "subgroup_font_size": 7.1,
             "row_font_size": 6.7,
             "title_weight": "bold",
             "signal_weight": "bold",
             "section_weight": "bold",
-            "subgroup_weight": "normal",
+            "subgroup_weight": "bold",
             "metric_weight": "normal",
             "header_metric_value_weight": "bold",
             "label_color": "#374151",
@@ -529,13 +574,16 @@ class SignalSummaryChartMixin:
                 section_block = {"type": "section_header", "label": section, "height": 1.18, "divider": section_index > 0}
             blocks.append(section_block)
             for row in section_rows:
+                if row["kind"] == "spacer":
+                    blocks.append({"type": "spacer", "height": row.get("height", 0.18)})
+                    continue
                 if row["kind"] == "subgroup":
                     blocks.append({
                         "type": "subgroup_header",
                         "label": row["label"],
                         "value": row.get("value"),
                         "color": row.get("color"),
-                        "height": 1.02
+                        "height": row.get("height", 1.02)
                     })
                 else:
                     blocks.append({
@@ -543,6 +591,7 @@ class SignalSummaryChartMixin:
                         "label": row["label"],
                         "value": row["value"],
                         "color": row.get("color"),
+                        "label_color": row.get("label_color"),
                         "bold": row.get("bold_value", False),
                         "indent": row.get("indent", 0),
                         "height": row.get("height", 1.0)
@@ -654,7 +703,8 @@ class SignalSummaryChartMixin:
             block: dict[str, Any]
         ) -> float:
             label_x = layout["left_x"] + (block.get("indent", 0) * layout["indent_x"])
-            label_style = style_map["metric_label"]
+            label_style = style_map["metric_label"].copy()
+            label_style["color"] = block.get("label_color") or label_style["color"]
             value_style = style_map["metric_value"].copy()
             value_style["color"] = block.get("color") or value_style["color"]
             value_text = str(block["value"]).upper() if block["label"] == "Volume Trend" else str(block["value"])

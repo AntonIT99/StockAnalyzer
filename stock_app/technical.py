@@ -228,7 +228,7 @@ class TechnicalAnalysisMixin:
         relative_gap = abs(sma50 - sma200) / abs(sma200)
         if relative_gap <= 0.0005:
             return "Cross Neutral"
-        return "Golden Cross" if sma50 > sma200 else "Death Cross"
+        return "Golden Cross (SMA50 > SMA200)" if sma50 > sma200 else "Death Cross (SMA50 < SMA200)"
 
     @staticmethod
     def format_trend_horizon(interval: str | None, layer: str) -> str:
@@ -238,6 +238,16 @@ class TechnicalAnalysisMixin:
             "slow": "~200 bars"
         }
         horizons = {
+            "1m": {
+                "fast": "~20 min",
+                "intermediate": "~1-2h",
+                "slow": "~3-4h"
+            },
+            "2m": {
+                "fast": "~40 min",
+                "intermediate": "~2-3h",
+                "slow": "~6-7h"
+            },
             "5m": {
                 "fast": "~1-2h",
                 "intermediate": "~4-8h",
@@ -271,6 +281,27 @@ class TechnicalAnalysisMixin:
         }
         interval_key = str(interval or "").lower()
         return horizons.get(interval_key, fallback).get(layer, fallback.get(layer, "~bars"))
+
+    @staticmethod
+    def format_previous_score_change_title(interval: str | None) -> str:
+        interval_key = str(interval or "").lower()
+        labels = {
+            "1m": "Previous 1m Bar",
+            "2m": "Previous 2m Bar",
+            "5m": "Previous 5m Bar",
+            "15m": "Previous 15m Bar",
+            "30m": "Previous 30m Bar",
+            "1h": "Previous Hour",
+            "2h": "Previous 2h Bar",
+            "4h": "Previous 4h Bar",
+            "1d": "Previous Day",
+            "1wk": "Previous Week",
+            "1mo": "Previous Month",
+            "3mo": "Previous Quarter",
+            "6mo": "Previous 6-Month Bar",
+            "1y": "Previous Year"
+        }
+        return labels.get(interval_key, "Previous Bar")
 
     @classmethod
     def calculate_period_price_summary(cls, data: pd.DataFrame) -> dict[str, float | None]:
@@ -762,6 +793,8 @@ class TechnicalAnalysisMixin:
             "slow_trend_hierarchy": "Not enough data",
             "fast_trend_state": "EMA20 N/A",
             "intermediate_trend_state": "EMA50 N/A",
+            "slow_trend_cross_state": "Cross Neutral",
+            "slow_trend_sma200_state": "SMA200 N/A",
             "slow_trend_state": "Cross Neutral",
             "distance_daily_ema20": None,
             "daily_ema_stack": "N/A",
@@ -890,15 +923,15 @@ class TechnicalAnalysisMixin:
             ])
         fast_trend_state = cls.format_slope_state("EMA20", ema20, ema20_previous)
         intermediate_trend_state = cls.format_slope_state("EMA50", ema50, ema50_previous)
-        slow_cross_state = cls.format_cross_state(sma50, sma200)
-        slow_slope_state = cls.format_slope_state("SMA200", sma200, sma200_previous)
+        slow_trend_cross_state = cls.format_cross_state(sma50, sma200)
+        slow_trend_sma200_state = cls.format_slope_state("SMA200", sma200, sma200_previous)
         if not valid_slow_indicators:
             slow_trend_state = "Not enough data"
         else:
             slow_trend_state = (
-                slow_cross_state
-                if slow_slope_state == "SMA200 N/A"
-                else f"{slow_cross_state} / {slow_slope_state}"
+                slow_trend_cross_state
+                if slow_trend_sma200_state == "SMA200 N/A"
+                else f"{slow_trend_cross_state} / {slow_trend_sma200_state}"
             )
 
         def relation_text(passed: bool | None) -> str:
@@ -956,6 +989,8 @@ class TechnicalAnalysisMixin:
             "slow_trend_hierarchy": slow_trend_hierarchy,
             "fast_trend_state": fast_trend_state,
             "intermediate_trend_state": intermediate_trend_state,
+            "slow_trend_cross_state": slow_trend_cross_state,
+            "slow_trend_sma200_state": slow_trend_sma200_state,
             "slow_trend_state": slow_trend_state,
             "distance_daily_ema20": cls.percentage_distance(current_price, ema20),
             "daily_ema_stack": ema_stack,
@@ -1112,6 +1147,7 @@ class TechnicalAnalysisMixin:
         empty_changes: dict[str, Any] = {
             "score_changes_last_day": [],
             "score_changes_period_start": [],
+            "score_changes_previous_title": cls.format_previous_score_change_title(interval),
             "trend_direction": "Stable",
             "trend_period_direction": "Stable"
         }
@@ -1154,6 +1190,7 @@ class TechnicalAnalysisMixin:
         return {
             "score_changes_last_day": last_day_rows,
             "score_changes_period_start": period_start_rows,
+            "score_changes_previous_title": cls.format_previous_score_change_title(interval),
             "trend_direction": cls.calculate_score_direction(current_summary, previous_summary),
             "trend_period_direction": cls.calculate_score_direction(current_summary, period_start_summary)
         }
