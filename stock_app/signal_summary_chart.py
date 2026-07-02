@@ -29,7 +29,7 @@ class SignalSummaryChartMixin:
             normalized = str(value).lower()
             if normalized in {"above", "above signal", "above 0", "rising", "bullish", "strong bullish", "strongly bullish", "bullish confirmed", "strong bullish confirmed", "confirmed uptrend", "golden cross", "golden state", "cheap", "strong", "confirmed", "excellent", "good", "attractive", "ok", "healthy", "improving"}:
                 return "#16a34a"
-            if normalized in {"partial", "moderate", "fair", "slightly bearish", "neutral / mixed", "mixed", "neutral / transition", "mixed / transition", "early recovery", "recovery attempt", "bearish, improving", "mixed bearish", "pullback", "stable", "cross neutral"}:
+            if normalized in {"partial", "moderate", "fair", "slightly bearish", "neutral / mixed", "mixed", "neutral / transition", "mixed / transition", "transition", "early recovery", "weak recovery", "recovery attempt", "reversal attempt", "improving, not confirmed", "bearish, improving", "mixed bearish", "pullback", "bullish pullback", "bearish pullback", "bullish, losing momentum", "bullish but weakening", "stable", "cross neutral"}:
                 return "#f97316"
             if normalized in {"below", "below signal", "below 0", "falling", "bearish", "strong bearish", "strongly bearish", "confirmed downtrend", "weak / bearish", "death cross", "death state", "deteriorating", "expensive", "weak", "none", "poor", "risky", "extended", "outside range"}:
                 return "#dc2626"
@@ -258,80 +258,190 @@ class SignalSummaryChartMixin:
         medium_term_score_value = summary.get("medium_term_trend_score")
         long_term_score_value = summary.get("long_term_trend_score")
         short_term_bullish = type(self).trend_layer_is_bullish(short_term_score_value)
+        short_term_bearish = type(self).trend_layer_is_bearish(short_term_score_value)
+        short_term_mixed = type(self).trend_layer_is_mixed(short_term_score_value)
         medium_term_bullish = type(self).trend_layer_is_bullish(medium_term_score_value)
         medium_term_bearish = type(self).trend_layer_is_bearish(medium_term_score_value)
+        medium_term_mixed = type(self).trend_layer_is_mixed(medium_term_score_value)
         long_term_bullish = type(self).trend_layer_is_bullish(long_term_score_value)
         long_term_bearish = type(self).trend_layer_is_bearish(long_term_score_value)
-        key_reasons = []
+        all_trend_layers_bullish = short_term_bullish and medium_term_bullish and long_term_bullish
+        all_trend_layers_bearish = short_term_bearish and medium_term_bearish and long_term_bearish
+        broader_trend_bullish = medium_term_bullish and long_term_bullish
+        broader_trend_bearish = medium_term_bearish and long_term_bearish
+        momentum_score = summary.get("daily_trend_score_momentum")
+        setup_score = summary.get("daily_trend_score_quality")
+        key_reason_candidates: list[dict[str, Any]] = []
 
-        def add_key_reason(reason: str) -> None:
-            if reason and reason not in key_reasons:
-                key_reasons.append(reason)
+        def add_reason(text: str, priority: int, category: str, polarity: str = "mixed") -> None:
+            if text:
+                key_reason_candidates.append({
+                    "text": text,
+                    "priority": priority,
+                    "category": category,
+                    "polarity": polarity
+                })
 
-        if trend_phase in {"Early Recovery", "Recovery Attempt"}:
-            add_key_reason("Fast trend recovery attempt")
-        elif trend_phase == "Pullback":
-            add_key_reason("Fast trend pullback")
-        elif trend_phase == "Confirmed Uptrend":
-            add_key_reason("All trend layers bullish")
-        elif trend_phase == "Confirmed Downtrend":
-            add_key_reason("Trend layers remain bearish")
+        if all_trend_layers_bearish:
+            add_reason("All trend layers bearish", 100, "trend_structure", "bearish")
+            add_reason("Slow trend structurally bearish", 84, "trend_conflict", "bearish")
+        elif all_trend_layers_bullish:
+            add_reason("Trend layers aligned bullish", 100, "trend_structure", "bullish")
+        elif short_term_bearish and long_term_bullish:
+            add_reason("Fast pullback inside broader strength", 100, "trend_structure", "mixed")
+            add_reason("Slow trend still supportive", 88, "trend_conflict", "bullish")
+            if medium_term_bearish:
+                add_reason("Intermediate trend has weakened", 74, "trend_conflict", "bearish")
+        elif short_term_bullish and medium_term_bullish and long_term_bearish:
+            add_reason("Fast and intermediate trends improving", 100, "trend_structure", "mixed")
+            add_reason("Slow trend still blocks confirmation", 92, "trend_conflict", "bearish")
         elif short_term_bullish and long_term_bearish:
-            add_key_reason("Fast trend recovery attempt")
-        if trend_direction == "Improving":
-            add_key_reason("Trend structure improving")
-        elif trend_direction == "Deteriorating":
-            add_key_reason("Trend structure deteriorating")
-        if price_above_ema20 is True and price_above_sma200 is False:
-            add_key_reason("Price above EMA20 but below SMA200")
-        elif price_above_ema20 is False and price_above_sma200 is False:
-            add_key_reason("Price below EMA20 and SMA200")
-        elif price_above_ema20 is True and price_above_sma200 is True:
-            add_key_reason("Price above EMA20 and SMA200")
-        elif price_above_ema20 is False:
-            add_key_reason("Price below EMA20")
-        elif price_above_sma200 is False:
-            add_key_reason("Price below slow average")
-        elif price_above_ema20 is True:
-            add_key_reason("Price above EMA20")
-        elif price_above_sma200 is True:
-            add_key_reason("Price above slow average")
-        if long_term_bearish:
-            add_key_reason("Slow trend remains bearish")
+            add_reason("Early recovery attempt", 100, "trend_structure", "mixed")
+            add_reason("Broader trend remains bearish", 90, "trend_conflict", "bearish")
+        elif (short_term_mixed or short_term_bullish) and broader_trend_bearish:
+            add_reason("Fast trend stabilizing", 96, "trend_structure", "mixed")
+            add_reason("Broader trend remains bearish", 90, "trend_conflict", "bearish")
+        elif short_term_bearish and broader_trend_bullish:
+            add_reason("Fast trend pullback inside broader strength", 98, "trend_structure", "mixed")
+            add_reason("Broader structure still supportive", 86, "trend_conflict", "bullish")
+        elif long_term_bearish:
+            add_reason("Slow trend still blocks confirmation", 84, "trend_structure", "bearish")
         elif long_term_bullish:
-            add_key_reason("Slow trend still bullish")
-        if short_term_bullish and not medium_term_bullish:
-            add_key_reason("Intermediate trend not confirmed yet")
-        elif medium_term_bearish:
-            add_key_reason("Intermediate trend remains bearish")
-        elif medium_term_bullish and long_term_bearish:
-            add_key_reason("Intermediate recovery not confirmed by slow trend")
+            add_reason("Slow trend still supportive", 80, "trend_structure", "bullish")
+        elif medium_term_mixed:
+            add_reason("Trend layers remain in transition", 76, "trend_structure", "mixed")
+
+        if trend_direction == "Improving":
+            if broader_trend_bearish and not all_trend_layers_bearish:
+                add_reason("Short-term improvement within bearish structure", 78, "comparison", "mixed")
+            else:
+                add_reason("Trend structure improving", 64, "comparison", "bullish")
+        elif trend_direction == "Deteriorating":
+            add_reason("Trend structure deteriorating", 76, "comparison", "bearish")
+
+        if momentum_score is not None:
+            momentum_score_int = int(momentum_score)
+            if momentum_score_int >= 3:
+                if long_term_bearish or trend_phase in {"Early Recovery", "Recovery Attempt"}:
+                    add_reason("Momentum supports rebound", 84, "momentum", "bullish")
+                elif all_trend_layers_bullish:
+                    add_reason("Momentum confirms upside", 84, "momentum", "bullish")
+                else:
+                    add_reason("Momentum remains strong", 80, "momentum", "bullish")
+            elif momentum_score_int == 2:
+                if macd_above_signal is True and macd_above_zero is False:
+                    add_reason("MACD turned up below zero", 82, "momentum", "mixed")
+                elif trend_direction == "Improving":
+                    add_reason("Momentum is improving", 78, "momentum", "bullish")
+                else:
+                    add_reason("Momentum constructive, not confirmed", 76, "momentum", "mixed")
+            elif momentum_score_int == 1:
+                if macd_above_signal is True and macd_above_zero is False:
+                    add_reason("MACD up, momentum still weak", 82, "momentum", "mixed")
+                elif all_trend_layers_bearish:
+                    add_reason("Momentum remains weak", 82, "momentum", "bearish")
+                else:
+                    add_reason("Momentum not fully confirmed", 80, "momentum", "mixed")
+            else:
+                if short_term_bearish and long_term_bullish:
+                    add_reason("Momentum has turned weak", 82, "momentum", "bearish")
+                elif all_trend_layers_bearish:
+                    add_reason("Momentum is clearly bearish", 82, "momentum", "bearish")
+                else:
+                    add_reason("Momentum does not support setup", 80, "momentum", "bearish")
+
+        confirmation_score_int = int(confirmation_score) if confirmation_score is not None else None
+        setup_score_int = int(setup_score) if setup_score is not None else None
+        if setup_score_int is not None and confirmation_score_int is not None:
+            if setup_score_int >= 3 and confirmation_score_int <= 1:
+                add_reason("Setup strong, confirmation weak", 74, "setup_confirmation", "mixed")
+            elif setup_score_int == 2 and confirmation_score_int <= 1:
+                text = "Setup acceptable, confirmation missing" if confirmation_score_int == 0 else "Setup acceptable, confirmation weak"
+                add_reason(text, 74, "setup_confirmation", "mixed")
+
+        if setup_score_int is not None:
+            if setup_score_int >= 3 and (confirmation_score_int is None or confirmation_score_int >= 2):
+                add_reason("Setup quality is strong", 68, "setup", "bullish")
+            elif setup_score_int == 2 and confirmation_score_int is None:
+                add_reason("Setup is acceptable", 62, "setup", "mixed")
+            elif setup_score_int == 1:
+                add_reason("Setup quality is marginal", 58, "setup", "mixed")
+            elif setup_score_int == 0:
+                add_reason("Setup quality remains poor", 58, "setup", "bearish")
+
+        if confirmation_score_int is not None:
+            if confirmation_score_int >= 3:
+                add_reason("Move has strong confirmation", 70, "confirmation", "bullish")
+            elif confirmation_score_int == 2:
+                add_reason("Confirmation partly supports move", 68, "confirmation", "mixed")
+            elif confirmation_score_int == 1 and setup_score_int is None:
+                add_reason("Confirmation remains limited", 66, "confirmation", "bearish")
+            elif confirmation_score_int == 0 and setup_score_int is None:
+                add_reason("Confirmation is missing", 68, "confirmation", "bearish")
+
         daily_cross = summary.get("daily_cross", "N/A")
         if daily_cross in {"Death Cross", "Death State"}:
-            add_key_reason("Death cross remains active")
+            add_reason("Death cross remains active", 72 if all_trend_layers_bearish else 62, "cross", "bearish")
         elif daily_cross in {"Golden Cross", "Golden State"}:
-            add_key_reason("Golden cross remains active")
-        if rsi_above_50 is False and (macd_above_signal is False or macd_above_zero is False):
-            add_key_reason("Momentum remains weak")
-        elif rsi_above_50 is True and macd_above_signal is True:
-            add_key_reason("Momentum supports trend")
-        if macd_above_signal is False:
-            add_key_reason("MACD still bearish")
-        elif macd_above_signal is True:
-            add_key_reason("MACD supports upside")
-        if rsi_above_50 is False:
-            add_key_reason("RSI remains below 50")
-        elif rsi_above_50 is True:
-            add_key_reason("RSI holds above 50")
-        if price_above_sma50 is False:
-            add_key_reason("Price below SMA50")
-        elif price_above_sma50 is True:
-            add_key_reason("Price above SMA50")
-        if volume_above_sma20 is False:
-            add_key_reason("Volume below 20-bar average")
-        elif volume_above_sma20 is True:
-            add_key_reason("Volume above 20-bar average")
-        key_reasons = [reason for reason in key_reasons if reason][:6]
+            add_reason("Golden cross remains active", 64 if long_term_bullish else 58, "cross", "bullish")
+
+        if price_above_ema20 is True and price_above_sma200 is False:
+            add_reason("Price reclaimed EMA20, below slow averages", 64, "price", "mixed")
+        elif price_above_ema20 is False and price_above_sma200 is False:
+            add_reason("Price below EMA20 and slow averages", 64, "price", "bearish")
+        elif price_above_ema20 is True and price_above_sma200 is True:
+            add_reason("Price holds above key averages", 56, "price", "bullish")
+        elif price_above_sma200 is False:
+            add_reason("Price remains below slow averages", 62, "price", "bearish")
+        elif price_above_ema20 is False:
+            add_reason("Price remains below EMA20", 58, "price", "bearish")
+
+        for row in summary.get("score_changes_last_day", []):
+            label = row.get("label", "")
+            if "Momentum" in label and label.startswith("▲"):
+                add_reason("Momentum improving", 56, "comparison", "bullish")
+            elif "Momentum" in label and label.startswith("▼"):
+                add_reason("Momentum faded", 58, "comparison", "bearish")
+            elif "Confirmation" in label and label.startswith("▼"):
+                add_reason("Confirmation faded", 58, "comparison", "bearish")
+
+        def select_key_reasons(candidates: list[dict[str, Any]]) -> list[str]:
+            selected: list[str] = []
+            selected_categories: dict[str, int] = {}
+            seen_text: set[str] = set()
+            category_limits = {
+                "trend_structure": 2,
+                "trend_conflict": 2,
+                "momentum": 1,
+                "setup_confirmation": 1,
+                "setup": 1,
+                "confirmation": 1,
+                "cross": 1,
+                "price": 1,
+                "comparison": 1
+            }
+            for candidate in sorted(candidates, key=lambda item: item["priority"], reverse=True):
+                text = candidate["text"]
+                normalized_text = " ".join(text.lower().replace(",", "").split())
+                category = candidate["category"]
+                if normalized_text in seen_text:
+                    continue
+                if selected_categories.get(category, 0) >= category_limits.get(category, 1):
+                    continue
+                if "confirmation" in normalized_text and any(
+                    "confirmation" in existing.lower()
+                    for existing in selected
+                    if category != "cross"
+                ):
+                    continue
+                selected.append(text)
+                seen_text.add(normalized_text)
+                selected_categories[category] = selected_categories.get(category, 0) + 1
+                if len(selected) >= 6:
+                    break
+            return selected
+
+        key_reasons = select_key_reasons(key_reason_candidates)
 
         def format_rvol_diagnostic(value: float | None) -> str:
             if value is None or pd.isna(value):

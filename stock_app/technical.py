@@ -66,6 +66,10 @@ class TechnicalAnalysisMixin:
     def trend_layer_is_bearish(score: int | None) -> bool:
         return score is not None and score <= 2
 
+    @staticmethod
+    def trend_layer_is_mixed(score: int | None) -> bool:
+        return score is not None and score == 3
+
     @classmethod
     def calculate_trend_structure_score(
         cls,
@@ -136,12 +140,33 @@ class TechnicalAnalysisMixin:
         trend_direction: str,
         short_term_score: int | None,
         medium_term_score: int | None,
-        long_term_score: int | None
+        long_term_score: int | None,
+        score: int | None = None,
+        max_score: int | None = None,
+        trend_score: int | None = None,
+        momentum_score: int | None = None,
+        confirmation_score: int | None = None
     ) -> str:
         if label == "N/A":
             return label
+        if score is not None and max_score is not None:
+            return cls.classify_score_percentage(
+                score,
+                max_score,
+                trend_score=trend_score,
+                short_term_score=short_term_score,
+                medium_term_score=medium_term_score,
+                long_term_score=long_term_score,
+                momentum_score=momentum_score,
+                confirmation_score=confirmation_score,
+                trend_phase=trend_phase,
+                trend_direction=trend_direction
+            )
         recovery_phase = trend_phase in {"Early Recovery", "Recovery Attempt"}
+        pullback_phase = trend_phase in {"Pullback", "Bullish Pullback", "Bearish Pullback"}
         if recovery_phase and trend_direction != "Deteriorating":
+            return trend_phase
+        if pullback_phase and trend_direction != "Improving":
             return trend_phase
         if "Bearish" in label and trend_direction == "Improving":
             return "Bearish, Improving"
@@ -441,11 +466,39 @@ class TechnicalAnalysisMixin:
         if score is None:
             return "N/A"
         ratio = score / max_score if max_score else 0
+
+        def score_band_label() -> str:
+            if ratio <= 0.20:
+                return "Bearish, Improving" if trend_direction == "Improving" else "Bearish"
+            if ratio <= 0.35:
+                return "Bearish, Improving" if trend_direction == "Improving" else "Bearish"
+            if ratio <= 0.45:
+                return "Bearish, Improving" if trend_direction == "Improving" else "Weak Recovery"
+            if ratio <= 0.55:
+                return "Neutral / Transition"
+            if ratio <= 0.65:
+                return "Constructive / Improving"
+            if ratio <= 0.80:
+                return "Bullish"
+            return "Strongly Bullish"
+
+        base_label = score_band_label()
+        short_bullish = cls.trend_layer_is_bullish(short_term_score)
+        medium_bullish = cls.trend_layer_is_bullish(medium_term_score)
+        long_bullish = cls.trend_layer_is_bullish(long_term_score)
+        short_bearish = cls.trend_layer_is_bearish(short_term_score)
+        medium_bearish = cls.trend_layer_is_bearish(medium_term_score)
+        long_bearish = cls.trend_layer_is_bearish(long_term_score)
+        short_mixed = cls.trend_layer_is_mixed(short_term_score)
+        medium_mixed = cls.trend_layer_is_mixed(medium_term_score)
+        all_bullish = short_bullish and medium_bullish and long_bullish
+        all_bearish = short_bearish and medium_bearish and long_bearish
+        momentum_weak = momentum_score is not None and momentum_score <= 1
+        momentum_strong = momentum_score is not None and momentum_score >= 2
+        confirmation_weak = confirmation_score is not None and confirmation_score <= 1
+        confirmation_supportive = confirmation_score is not None and confirmation_score >= 2
         recovery_phase = trend_phase in {"Early Recovery", "Recovery Attempt"}
-        if recovery_phase and trend_direction != "Deteriorating":
-            return trend_phase
-        if trend_phase == "Pullback" and trend_direction != "Improving":
-            return "Pullback"
+        pullback_phase = trend_phase in {"Pullback", "Bullish Pullback", "Bearish Pullback"}
         if cls.is_strongly_bearish_setup(
             short_term_score,
             medium_term_score,
@@ -454,25 +507,41 @@ class TechnicalAnalysisMixin:
             trend_direction=trend_direction,
             confirmation_score=confirmation_score
         ):
-            return "Strongly Bearish"
+            return "Strongly Bearish" if ratio <= 0.20 else "Confirmed Downtrend"
+
+        if all_bullish and (trend_direction == "Deteriorating" or momentum_weak):
+            return "Bullish, Losing Momentum"
         if (
-            cls.trend_layer_is_bullish(short_term_score)
-            and cls.trend_layer_is_bearish(long_term_score)
+            all_bearish
+            and momentum_weak
+            and (confirmation_score is None or confirmation_weak)
+            and base_label in {"Bearish", "Bearish, Improving", "Weak Recovery"}
         ):
-            return "Bearish, Improving" if trend_direction == "Improving" else "Mixed Bearish"
-        if ratio <= 0.20:
-            return "Bearish, Improving" if trend_direction == "Improving" else "Bearish"
-        if ratio <= 0.35:
-            return "Bearish, Improving" if trend_direction == "Improving" else "Bearish"
-        if ratio <= 0.45:
+            return "Confirmed Downtrend"
+
+        if short_bullish and medium_bullish and long_bearish:
+            if momentum_weak or confirmation_weak:
+                return "Improving, Not Confirmed"
+            return "Recovery Attempt" if momentum_strong or confirmation_supportive else "Reversal Attempt"
+        if short_bullish and long_bearish:
+            if medium_mixed or medium_bearish:
+                return "Early Recovery" if trend_direction == "Improving" or momentum_strong else "Weak Recovery"
+            return "Recovery Attempt"
+        if short_mixed and medium_bearish and long_bearish:
             return "Bearish, Improving" if trend_direction == "Improving" else "Weak Recovery"
-        if ratio <= 0.55:
-            return "Neutral / Transition"
-        if ratio <= 0.65:
-            return "Constructive / Improving"
-        if ratio <= 0.80:
-            return "Bullish"
-        return "Strongly Bullish"
+        if short_bearish and long_bearish and not all_bearish:
+            return "Bearish, Improving" if trend_direction == "Improving" else "Bearish Pullback"
+        if recovery_phase and trend_direction != "Deteriorating":
+            return trend_phase
+        if short_bearish and long_bullish:
+            if ratio >= 0.50 or (trend_score is not None and trend_score >= 8):
+                return "Bullish Pullback"
+            return "Pullback"
+        if pullback_phase and trend_direction != "Improving":
+            return trend_phase
+        if ratio >= 0.65 and (trend_direction == "Deteriorating" or momentum_weak):
+            return "Bullish, Losing Momentum"
+        return base_label
 
     @classmethod
     def classify_trend_score(cls, score: int | None) -> str:
@@ -1092,7 +1161,11 @@ class TechnicalAnalysisMixin:
             trend_direction,
             interval_summary.get("short_term_trend_score"),
             interval_summary.get("medium_term_trend_score"),
-            interval_summary.get("long_term_trend_score")
+            interval_summary.get("long_term_trend_score"),
+            score=interval_summary.get("daily_trend_score"),
+            max_score=interval_summary.get("daily_trend_score_max"),
+            trend_score=interval_summary.get("daily_trend_score_trend"),
+            momentum_score=interval_summary.get("daily_trend_score_momentum")
         )
         interval_summary["extended_rating"] = cls.refine_trend_label_with_direction(
             interval_summary.get("extended_rating", "N/A"),
@@ -1100,7 +1173,12 @@ class TechnicalAnalysisMixin:
             trend_direction,
             interval_summary.get("short_term_trend_score"),
             interval_summary.get("medium_term_trend_score"),
-            interval_summary.get("long_term_trend_score")
+            interval_summary.get("long_term_trend_score"),
+            score=interval_summary.get("extended_total_score"),
+            max_score=interval_summary.get("extended_max_score"),
+            trend_score=interval_summary.get("daily_trend_score_trend"),
+            momentum_score=interval_summary.get("daily_trend_score_momentum"),
+            confirmation_score=interval_summary.get("confirmation_score")
         )
         fundamentals = fundamentals or {}
         valuation = fundamentals.get("valuation_view", {}).get("value", "Unknown")
