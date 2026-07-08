@@ -94,8 +94,8 @@ class SettingsAndUIMixin:
         price_style_combobox = ttk.Combobox(
             top_controls,
             textvariable=self.price_style_var,
-            values=["Line", "Candlesticks"],
-            width=12,
+            values=["Line", "Candlesticks", "Line + Candlesticks"],
+            width=18,
             state="readonly"
         )
         price_style_combobox.pack(side="left", padx=5)

@@ -20,7 +20,7 @@ py main.py --ticker MSFT
 
 Enter a ticker symbol in the `Ticker` field, choose the period and interval, select the indicators you want to display, then click `Update`.
 
-Use the `Style` selector to switch the price panel between a close-price line and candlesticks.
+Use the `Style` selector to switch the price panel between a close-price line, candlesticks, and a combined line plus candlestick view.
 
 Available periods:
 

@@ -77,7 +77,7 @@ class StockApp(
         if self.interval_var.get() not in allowed_intervals:
             self.interval_var.set(allowed_intervals[0])
         self.price_style_var = tk.StringVar(value=settings.get("price_style", "Line"))
-        if self.price_style_var.get() not in {"Line", "Candlesticks"}:
+        if self.price_style_var.get() not in {"Line", "Candlesticks", "Line + Candlesticks"}:
             self.price_style_var.set("Line")
         indicator_settings = settings.get("indicators", {})
         self.show_ema9 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema9", False)))

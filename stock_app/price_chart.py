@@ -75,10 +75,13 @@ class PriceChartMixin:
         plot_x: pd.Index,
         compressed_x: bool
     ) -> None:
-        if price_style == "Candlesticks":
+        shows_candlesticks = price_style in {"Candlesticks", "Line + Candlesticks"}
+        shows_close_line = price_style in {"Line", "Line + Candlesticks"}
+        if shows_candlesticks:
             self.plot_candlesticks(ax, data, plot_x, compressed_x)
-        else:
-            ax.plot(plot_x, data["Close"], label="Close", linewidth=1.6, color="#2563eb")
+        if shows_close_line:
+            close_line_width = 0.9 if price_style == "Line + Candlesticks" else 1.6
+            ax.plot(plot_x, data["Close"], label="Close", linewidth=close_line_width, color="#2563eb", zorder=5)
         indicator_specs = [
             ("EMA9", "EMA 9"),
             ("EMA12", "EMA 12"),
@@ -104,7 +107,7 @@ class PriceChartMixin:
         ax.grid(True, axis="y", alpha=0.22, linewidth=0.8)
         ax.grid(True, axis="x", alpha=0.08, linewidth=0.6)
         handles, labels = ax.get_legend_handles_labels()
-        if price_style == "Candlesticks":
+        if shows_candlesticks:
             handles = [
                 Patch(facecolor="#16a34a", edgecolor="#16a34a", label="Up Candle"),
                 Patch(facecolor="#dc2626", edgecolor="#dc2626", label="Down Candle")
