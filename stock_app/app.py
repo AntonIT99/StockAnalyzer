@@ -4,13 +4,14 @@ import tkinter as tk
 from typing import Any
 import pandas as pd
 from .cache import build_cache_key, get_cache_path, load_cached_data, save_cached_data
-from .config import PERIOD_OPTIONS
+from .config import PERIOD_OPTIONS, VIEW_OPTIONS
 from .ohlcv import drop_incomplete_price_rows, flatten_yfinance_columns, get_bar_width, resample_ohlcv
 from .time_utils import get_host_timezone, host_now, host_today, normalize_index_to_host_timezone, to_host_naive_timestamp
 from .chart_update import ChartUpdateMixin
 from .fundamental_dashboard import FundamentalDashboardMixin
 from .price_chart import PriceChartMixin
 from .signal_summary_chart import SignalSummaryChartMixin
+from .risk_dashboard import RiskDashboardMixin
 from .volume_chart import VolumeChartMixin
 from .cursor import ChartCursorMixin
 from .data import MarketDataMixin
@@ -33,6 +34,7 @@ class StockApp(
     ChartCursorMixin,
     PriceChartMixin,
     SignalSummaryChartMixin,
+    RiskDashboardMixin,
     FundamentalDashboardMixin,
     VolumeChartMixin,
     ChartUpdateMixin,
@@ -80,6 +82,15 @@ class StockApp(
         if self.price_style_var.get() not in {"Line", "Candlesticks", "Line + Candlesticks"}:
             self.price_style_var.set("Line")
         indicator_settings = settings.get("indicators", {})
+        current_view = settings.get("current_view")
+        if current_view not in VIEW_OPTIONS:
+            if indicator_settings.get("show_fundamentals", False):
+                current_view = "Fundamentals"
+            elif indicator_settings.get("show_risk_assessment", False):
+                current_view = "Extended Summary"
+            else:
+                current_view = "Signal Summary"
+        self.current_view_var = tk.StringVar(value=current_view)
         self.show_ema9 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema9", False)))
         self.show_ema12 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema12", False)))
         self.show_ema20 = tk.BooleanVar(value=bool(indicator_settings.get("show_ema20", False)))
@@ -98,7 +109,6 @@ class StockApp(
         self.show_volume_ema50 = tk.BooleanVar(value=bool(indicator_settings.get("show_volume_ema50", True)))
         self.show_atr = tk.BooleanVar(value=bool(indicator_settings.get("show_atr", False)))
         self.show_earnings = tk.BooleanVar(value=bool(indicator_settings.get("show_earnings", False)))
-        self.show_fundamentals = tk.BooleanVar(value=bool(indicator_settings.get("show_fundamentals", False)))
         self.show_debug_fundamentals = tk.BooleanVar(value=bool(indicator_settings.get("show_debug_fundamentals", False)))
         self._fundamentals_cache: dict[str, dict[str, Any]] = {}
         self._cursor_contexts: dict[Any, dict[str, Any]] = {}

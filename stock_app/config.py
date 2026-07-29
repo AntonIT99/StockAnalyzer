@@ -3,8 +3,10 @@ import pandas as pd
 
 MAX_MOVING_AVERAGE_WINDOW = 200
 TREND_STRUCTURE_SCORE_MAX = 15
-BULLISH_STRUCTURE_SCORE_MAX = 21
-CONFIRMATION_SCORE_MAX = 3
+MOMENTUM_SCORE_MAX = 6
+SETUP_QUALITY_SCORE_MAX = 5
+CONFIRMATION_SCORE_MAX = 5
+BULLISH_STRUCTURE_SCORE_MAX = TREND_STRUCTURE_SCORE_MAX + MOMENTUM_SCORE_MAX + SETUP_QUALITY_SCORE_MAX
 EXTENDED_BULLISH_SCORE_MAX = BULLISH_STRUCTURE_SCORE_MAX + CONFIRMATION_SCORE_MAX
 TECHNICAL_SCORE_WEIGHTS = {
     "trend": 0.40,
@@ -14,6 +16,46 @@ TECHNICAL_SCORE_WEIGHTS = {
 }
 if not abs(sum(TECHNICAL_SCORE_WEIGHTS.values()) - 1.0) < 1e-9:
     raise ValueError("TECHNICAL_SCORE_WEIGHTS must add up to 1.0")
+TECHNICAL_ASSESSMENT_WEAK_PERCENTAGES = {
+    "trend": 60.0,
+    "momentum": 50.0,
+    "setup": 50.0,
+    "confirmation": 50.0,
+}
+
+
+class PullbackRiskConfig:
+    LOOKBACK_BARS = 20
+    ATR_MODERATE = 1.5
+    ATR_EXTENDED = 2.0
+    ATR_EXTREME = 3.0
+    RSI_ELEVATED = 70
+    RSI_EXHAUSTED = 75
+    RSI_EXTREME = 80
+    RSI_DIVERGENCE_DROP = 5
+    LOW_RVOL = 0.8
+    MACD_FALLING_BARS = 3
+
+    CATEGORY_MAX = {
+        "price_extension": 25,
+        "momentum_exhaustion": 30,
+        "participation_risk": 20,
+        "reversal_signals": 25,
+    }
+    POINTS = {
+        "extension_above_2_atr": 15,
+        "extension_above_3_atr": 25,
+        "rsi_above_75": 10,
+        "rsi_above_80": 15,
+        "rsi_falling_above_70": 5,
+        "macd_histogram_falling_3": 10,
+        "bearish_divergence": 15,
+        "low_volume_new_high": 15,
+        "rising_price_low_volume": 5,
+        "bollinger_breakout_failure": 15,
+        "spike_rejection_candle": 10,
+        "failed_previous_high": 15,
+    }
 ATR_PCT_HEALTHY_MIN = 0.01
 ATR_PCT_HEALTHY_MAX = 0.06
 DAILY_SIGNAL_PERIOD = "2y"
@@ -22,6 +64,7 @@ CACHE_DIR = PROJECT_ROOT / ".stock_cache"
 SETTINGS_PATH = PROJECT_ROOT / ".stock_settings.json"
 CUSTOM_PERIOD = "Custom"
 AUTO_SELECT_PERIOD = "Auto-Select"
+VIEW_OPTIONS = ["Signal Summary", "Extended Summary", "Fundamentals"]
 AUTO_SELECT_PERIODS_BY_INTERVAL = {
     "1m": "4h",
     "2m": "1d",
@@ -138,6 +181,5 @@ INDICATOR_SETTINGS = [
     "show_volume_ema50",
     "show_atr",
     "show_earnings",
-    "show_fundamentals",
     "show_debug_fundamentals"
 ]

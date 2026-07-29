@@ -3,7 +3,7 @@
 from typing import Any
 import pandas as pd
 from matplotlib.patches import FancyBboxPatch
-from .config import CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, TECHNICAL_SCORE_WEIGHTS, TREND_STRUCTURE_SCORE_MAX
+from .config import CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, MOMENTUM_SCORE_MAX, SETUP_QUALITY_SCORE_MAX, TECHNICAL_SCORE_WEIGHTS, TREND_STRUCTURE_SCORE_MAX
 
 class SignalSummaryChartMixin:
     def add_signal_summary_box(
@@ -85,14 +85,35 @@ class SignalSummaryChartMixin:
             if distance == "N/A":
                 return state
             return distance
+
+        def format_atr_extension() -> str:
+            extension = summary.get("atr_extension")
+            if extension is None or pd.isna(extension):
+                return "N/A"
+            return f"{extension:+.1f} ATR ({summary.get('atr_extension_state', 'N/A')})"
+
+        def atr_extension_color() -> str:
+            return {
+                "Normal": "#16a34a",
+                "Moderately Extended": "#f97316",
+                "Extended": "#ea580c",
+                "Extremely Extended": "#dc2626",
+            }.get(summary.get("atr_extension_state"), "#64748b")
+
+        def risk_status(value: bool | None) -> tuple[str, str]:
+            if value is None:
+                return "—", "#64748b"
+            return ("Yes", "#dc2626") if value else ("No", "#16a34a")
         trend_score = summary.get("daily_trend_score")
         trend_label = summary.get("daily_trend", type(self).classify_trend_score(trend_score))
         confirmation_score = summary.get("confirmation_score")
         confirmation_max = summary.get("confirmation_max", CONFIRMATION_SCORE_MAX)
+        momentum_max = summary.get("daily_trend_score_momentum_max", MOMENTUM_SCORE_MAX)
+        setup_max = summary.get("daily_trend_score_quality_max", SETUP_QUALITY_SCORE_MAX)
         extended_total_score = summary.get("extended_total_score")
         extended_max_score = summary.get("extended_max_score", EXTENDED_BULLISH_SCORE_MAX)
         weighted_score = summary.get("weighted_technical_score")
-        verdict_text = summary.get("weighted_technical_rating", "N/A")
+        verdict_text = summary.get("overall_description", summary.get("weighted_technical_rating", "N/A"))
         if verdict_text == "N/A":
             verdict_text = trend_label
         extended_score_text = "N/A" if weighted_score is None else f"{int(weighted_score + 0.5)}/100"
@@ -106,6 +127,9 @@ class SignalSummaryChartMixin:
             "Neutral / Mixed": "#64748b",
             "Bearish": "#f97316",
             "Strongly Bearish": "#dc2626",
+            "Bullish but Extended": "#f97316",
+            "Bullish Trend — High Pullback Risk": "#dc2626",
+            "Bullish with Elevated Risk": "#f97316",
         }
 
         def score_color(passed: bool | None) -> str:
@@ -154,23 +178,23 @@ class SignalSummaryChartMixin:
                     return "Slightly Bearish"
                 return "Bearish"
             if normalized_title == "momentum":
-                if value >= max_score:
+                if ratio >= 0.80:
                     return "Strong"
-                if value >= max(2, int(max_score * 0.50)):
+                if ratio >= 0.50:
                     return "Moderate"
                 return "Weak"
             if normalized_title == "setup quality":
-                if value >= max_score:
+                if ratio >= 0.80:
                     return "Excellent"
-                if value >= max_score - 1:
+                if ratio >= 0.60:
                     return "Good"
                 if value > 0:
                     return "Fair"
                 return "Poor"
             if normalized_title == "confirmation":
-                if value >= max_score:
+                if ratio >= 0.80:
                     return "Confirmed"
-                if value >= max_score - 1:
+                if ratio >= 0.50:
                     return "Partial"
                 if value > 0:
                     return "Weak"
@@ -330,21 +354,22 @@ class SignalSummaryChartMixin:
 
         if momentum_score is not None:
             momentum_score_int = int(momentum_score)
-            if momentum_score_int >= 3:
+            momentum_ratio = momentum_score_int / momentum_max if momentum_max else 0
+            if momentum_ratio >= 0.80:
                 if long_term_bearish or trend_phase in {"Early Recovery", "Recovery Attempt"}:
                     add_reason("Momentum supports rebound", 84, "momentum", "bullish")
                 elif all_trend_layers_bullish:
                     add_reason("Momentum confirms upside", 84, "momentum", "bullish")
                 else:
                     add_reason("Momentum remains strong", 80, "momentum", "bullish")
-            elif momentum_score_int == 2:
+            elif momentum_ratio >= 0.50:
                 if macd_above_signal is True and macd_above_zero is False:
                     add_reason("MACD turned up below zero", 82, "momentum", "mixed")
                 elif trend_direction == "Improving":
                     add_reason("Momentum is improving", 78, "momentum", "bullish")
                 else:
                     add_reason("Momentum constructive, not confirmed", 76, "momentum", "mixed")
-            elif momentum_score_int == 1:
+            elif momentum_score_int > 0:
                 if macd_above_signal is True and macd_above_zero is False:
                     add_reason("MACD up, momentum still weak", 82, "momentum", "mixed")
                 elif all_trend_layers_bearish:
@@ -361,29 +386,35 @@ class SignalSummaryChartMixin:
 
         confirmation_score_int = int(confirmation_score) if confirmation_score is not None else None
         setup_score_int = int(setup_score) if setup_score is not None else None
+        confirmation_ratio = (
+            confirmation_score_int / confirmation_max
+            if confirmation_score_int is not None and confirmation_max
+            else None
+        )
+        setup_ratio = setup_score_int / setup_max if setup_score_int is not None and setup_max else None
         if setup_score_int is not None and confirmation_score_int is not None:
-            if setup_score_int >= 3 and confirmation_score_int <= 1:
+            if setup_ratio >= 0.80 and confirmation_ratio < 0.50:
                 add_reason("Setup strong, confirmation weak", 74, "setup_confirmation", "mixed")
-            elif setup_score_int == 2 and confirmation_score_int <= 1:
+            elif setup_ratio >= 0.50 and confirmation_ratio < 0.50:
                 text = "Setup acceptable, confirmation missing" if confirmation_score_int == 0 else "Setup acceptable, confirmation weak"
                 add_reason(text, 74, "setup_confirmation", "mixed")
 
         if setup_score_int is not None:
-            if setup_score_int >= 3 and (confirmation_score_int is None or confirmation_score_int >= 2):
+            if setup_ratio >= 0.80 and (confirmation_ratio is None or confirmation_ratio >= 0.50):
                 add_reason("Setup quality is strong", 68, "setup", "bullish")
-            elif setup_score_int == 2 and confirmation_score_int is None:
+            elif setup_ratio >= 0.50 and confirmation_score_int is None:
                 add_reason("Setup is acceptable", 62, "setup", "mixed")
-            elif setup_score_int == 1:
+            elif setup_score_int > 0:
                 add_reason("Setup quality is marginal", 58, "setup", "mixed")
             elif setup_score_int == 0:
                 add_reason("Setup quality remains poor", 58, "setup", "bearish")
 
         if confirmation_score_int is not None:
-            if confirmation_score_int >= 3:
+            if confirmation_ratio >= 0.80:
                 add_reason("Move has strong confirmation", 70, "confirmation", "bullish")
-            elif confirmation_score_int == 2:
+            elif confirmation_ratio >= 0.50:
                 add_reason("Confirmation partly supports move", 68, "confirmation", "mixed")
-            elif confirmation_score_int == 1 and setup_score_int is None:
+            elif confirmation_score_int > 0 and setup_score_int is None:
                 add_reason("Confirmation remains limited", 66, "confirmation", "bearish")
             elif confirmation_score_int == 0 and setup_score_int is None:
                 add_reason("Confirmation is missing", 68, "confirmation", "bearish")
@@ -534,46 +565,38 @@ class SignalSummaryChartMixin:
                 ]
             ),
             (
-                score_header("Momentum", "daily_trend_score_momentum", 3),
+                score_header("Momentum", "daily_trend_score_momentum", momentum_max),
                 [
                     metric_row("RSI14 > 50", format_rsi14(), score_color(rsi_above_50)),
+                    metric_row("RSI Direction", summary.get("rsi_direction", "N/A"), status_color(summary.get("rsi_direction", "N/A"))),
                     metric_row("MACD vs Signal", summary.get("daily_macd_vs_signal", "N/A"), score_color(macd_above_signal)),
-                    metric_row("MACD vs 0", summary.get("daily_macd_zero", "N/A"), score_color(macd_above_zero))
+                    metric_row("MACD vs 0", summary.get("daily_macd_zero", "N/A"), score_color(macd_above_zero)),
+                    metric_row("MACD Histogram", summary.get("macd_histogram_direction", "N/A"), status_color(summary.get("macd_histogram_direction", "N/A"))),
+                    metric_row(
+                        "Bearish Divergence",
+                        *risk_status(summary.get("rsi_bearish_divergence") or summary.get("macd_bearish_divergence"))
+                    )
                 ]
             ),
             (
-                score_header("Setup Quality", "daily_trend_score_quality", 3),
+                score_header("Setup Quality", "daily_trend_score_quality", setup_max),
                 [
                     metric_row("Volume vs SMA20", format_signed_percent(summary.get("distance_volume_sma20")), distance_color(summary.get("distance_volume_sma20")), True),
                     metric_row("EMA20 Ext <=8%", format_extension("daily_ema20_extension_state", "daily_ema20_extension"), status_color(summary.get("daily_ema20_extension_state", "N/A"))),
-                    metric_row("SMA200 Ext <=20%", format_extension("daily_sma200_extension_state", "daily_sma200_extension"), status_color(summary.get("daily_sma200_extension_state", "N/A")))
+                    metric_row("SMA200 Ext <=20%", format_extension("daily_sma200_extension_state", "daily_sma200_extension"), status_color(summary.get("daily_sma200_extension_state", "N/A"))),
+                    metric_row("ATR Extension", format_atr_extension(), atr_extension_color()),
+                    metric_row("Bollinger Failure", *risk_status(summary.get("bollinger_breakout_failure")))
                 ]
             ),
             (
                 score_header("Confirmation", "confirmation_score", confirmation_max, confirmation=True),
                 [
-                    metric_row("RVOL20>1.1 + EMA20", status_symbol(rvol_confirmed), score_color(rvol_confirmed), True),
+                    metric_row("RVOL Confirmation", status_symbol(rvol_confirmed), score_color(rvol_confirmed), True),
                     metric_row("RVOL20", rvol20_text, rvol_color(rvol20)),
+                    metric_row("Low-Volume New High", *risk_status(summary.get("low_volume_new_high"))),
+                    metric_row("Rejection Candle", *risk_status(summary.get("spike_rejection_candle"))),
                     metric_row("Volume vs SMA20", format_signed_percent(summary.get("distance_volume_sma20")), distance_color(summary.get("distance_volume_sma20")), True),
                     metric_row("ATR% Range", f"{status_symbol(status_pass('daily_atr_pct_state', 'Healthy'))} {summary.get('daily_atr_pct_state', 'N/A')}", status_color(summary.get("daily_atr_pct_state", "N/A")))
-                ]
-            ),
-            (
-                "Diagnostics",
-                [
-                    metric_row("Volume Trend", summary.get("volume_trend", "Neutral"), status_color(summary.get("volume_trend", "Neutral")), True),
-                    metric_row("Relative Volume", format_rvol_diagnostic(current_rvol), rvol_color(current_rvol)),
-                    metric_row("ATR14", format_atr_diagnostic(atr14), status_color(summary.get("daily_atr_pct_state", "N/A")))
-                ]
-            ),
-            (
-                "Market Context",
-                [
-                    metric_row("From Daily 52W High", self.format_summary_percent(summary.get("distance_52w_high")), from_52w_high_color(summary.get("distance_52w_high"))),
-                    metric_row("From Daily 52W Low", self.format_summary_percent(summary.get("distance_52w_low")), from_52w_low_color(summary.get("distance_52w_low"))),
-                    metric_row("Valuation", summary.get("valuation", "Unknown"), status_color(summary.get("valuation", "Unknown"))),
-                    metric_row("Business", summary.get("business_health", "Unknown"), status_color(summary.get("business_health", "Unknown"))),
-                    metric_row("Investment View", summary.get("investment_view", "Watchlist"), status_color(summary.get("investment_view", "Watchlist")))
                 ]
             )
         ]
@@ -600,10 +623,10 @@ class SignalSummaryChartMixin:
             "row_gap": 1.0,
             "header_gap": 0.56,
             "title_font_size": 10.6,
-            "signal_font_size": 12.4,
+            "signal_font_size": 9.4 if len(verdict_text) > 25 else 12.4,
             "header_metric_font_size": 7.3,
-            "section_font_size": 8.0,
-            "subgroup_font_size": 7.1,
+            "section_font_size": 7.4,
+            "subgroup_font_size": 5.7,
             "row_font_size": 6.7,
             "title_weight": "bold",
             "signal_weight": "bold",
@@ -644,7 +667,7 @@ class SignalSummaryChartMixin:
                 "label_x": layout["left_x"],
                 "value_x": layout["header_metric_value_x"],
                 "color": color,
-                "height": 1.0
+                "height": 1.28
             }
         blocks: list[dict[str, Any]] = [
             {"type": "title", "label": "Signal Summary", "height": 1.62},
@@ -657,7 +680,7 @@ class SignalSummaryChartMixin:
                     f"{TECHNICAL_SCORE_WEIGHTS['trend']:.0%} Trend Structure,  "
                     f"{TECHNICAL_SCORE_WEIGHTS['momentum']:.0%} Momentum"
                 ),
-                "height": 0.92,
+                "height": 1.12,
             },
             {
                 "type": "weighted_summary",
@@ -665,7 +688,7 @@ class SignalSummaryChartMixin:
                     f"{TECHNICAL_SCORE_WEIGHTS['setup']:.0%} Setup Quality,  "
                     f"{TECHNICAL_SCORE_WEIGHTS['confirmation']:.0%} Confirmation"
                 ),
-                "height": 0.92,
+                "height": 1.12,
             },
             {"type": "divider", "height": 0.44},
             {"type": "key_reason_header", "label": "Key Reasons", "height": 1.12}
@@ -682,7 +705,7 @@ class SignalSummaryChartMixin:
             if has_score_changes:
                 blocks.append({"type": "divider", "height": 0.44})
             has_score_changes = True
-            blocks.append({"type": "change_header", "label": change_title, "height": 0.92})
+            blocks.append({"type": "change_header", "label": change_title, "height": 1.08})
             blocks.extend(
                 {
                     "type": "change_row",
@@ -736,8 +759,8 @@ class SignalSummaryChartMixin:
         required_units = sum(block["height"] for block in blocks)
         base_gap = min(0.0165, available_height / max(required_units, 1))
         if base_gap < 0.0125:
-            base_gap = max(0.0112, available_height / max(required_units, 1))
-            font_scale = max(0.88, min(1.0, base_gap / 0.0125))
+            base_gap = available_height / max(required_units, 1)
+            font_scale = max(0.72, min(1.0, base_gap / 0.0145))
             for style in style_map.values():
                 style["fontsize"] *= font_scale
         layout["row_gap"] = base_gap

@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
-from .config import CUSTOM_PERIOD, INDICATOR_SETTINGS, PERIOD_OPTIONS, SETTINGS_PATH
+from .config import CUSTOM_PERIOD, INDICATOR_SETTINGS, PERIOD_OPTIONS, SETTINGS_PATH, VIEW_OPTIONS
 
 class SettingsAndUIMixin:
     @staticmethod
@@ -29,6 +29,7 @@ class SettingsAndUIMixin:
             "custom_end": self.custom_end_var.get().strip(),
             "interval": self.interval_var.get(),
             "price_style": self.price_style_var.get(),
+            "current_view": self.current_view_var.get(),
             "indicators": {
                 indicator: getattr(self, indicator).get()
                 for indicator in INDICATOR_SETTINGS
@@ -101,6 +102,16 @@ class SettingsAndUIMixin:
         price_style_combobox.pack(side="left", padx=5)
         price_style_combobox.bind("<<ComboboxSelected>>", lambda _event: self.save_settings())
         ttk.Button(top_controls, text="Update", command=lambda: self.update_chart(refresh_fundamentals=True)).pack(side="left", padx=15)
+        ttk.Label(top_controls, text="View:").pack(side="left", padx=(2, 0))
+        view_combobox = ttk.Combobox(
+            top_controls,
+            textvariable=self.current_view_var,
+            values=VIEW_OPTIONS,
+            width=18,
+            state="readonly"
+        )
+        view_combobox.pack(side="left", padx=5)
+        view_combobox.bind("<<ComboboxSelected>>", lambda _event: self.on_view_changed())
         ttk.Checkbutton(indicator_controls, text="EMA 9", variable=self.show_ema9, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="EMA 12", variable=self.show_ema12, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="EMA 20", variable=self.show_ema20, command=self.save_settings).pack(side="left", padx=8)
@@ -119,7 +130,6 @@ class SettingsAndUIMixin:
         ttk.Checkbutton(indicator_controls, text="Vol EMA50", variable=self.show_volume_ema50, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="ATR 14", variable=self.show_atr, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="Earnings", variable=self.show_earnings, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="Fundamentals", variable=self.show_fundamentals, command=self.save_settings).pack(side="left", padx=8)
         ttk.Checkbutton(indicator_controls, text="Debug Fundamentals", variable=self.show_debug_fundamentals, command=self.save_settings).pack(side="left", padx=8)
         self.figure = Figure(figsize=(11, 7), dpi=100, constrained_layout=True)
         self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
@@ -128,6 +138,11 @@ class SettingsAndUIMixin:
     def on_period_changed(self):
         self.toggle_custom_date_controls()
         self.update_interval_options(persist=True)
+
+    def on_view_changed(self):
+        self.save_settings()
+        if self.ticker_var.get().strip():
+            self.update_chart(refresh_fundamentals=self.current_view_var.get() == "Fundamentals")
 
     def on_custom_range_changed(self):
         self.update_interval_options(persist=True)

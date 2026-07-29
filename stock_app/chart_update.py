@@ -29,21 +29,19 @@ class ChartUpdateMixin:
             + int(self.show_atr.get())
         )
         total_rows = 1 + extra_panels
-        show_fundamentals = self.show_fundamentals.get()
+        current_view = self.current_view_var.get()
+        show_fundamentals = current_view == "Fundamentals"
+        show_extended_summary = current_view == "Extended Summary"
+        width_ratios = [5.35, 2.5] if show_extended_summary else [5.35, 1.35]
         chart_grid = self.figure.add_gridspec(
             total_rows,
             2,
-            width_ratios=[5.35, 1.35],
+            width_ratios=width_ratios,
             wspace=0.08,
             hspace=0.28
         )
         price_ax = self.figure.add_subplot(chart_grid[0, 0])
-        if show_fundamentals:
-            summary_ax = None
-            fundamentals_ax = self.figure.add_subplot(chart_grid[:, 1])
-        else:
-            summary_ax = self.figure.add_subplot(chart_grid[:, 1])
-            fundamentals_ax = None
+        view_ax = self.figure.add_subplot(chart_grid[:, 1])
         compressed_x = self.uses_compressed_axis(self.interval_var.get())
         plot_x = self.get_plot_x(data, compressed_x)
         selected_indicators = self.get_selected_indicators()
@@ -103,10 +101,18 @@ class ChartUpdateMixin:
                 self.make_cursor_series("Bollinger Lower", "BB_LOWER", "#64748b")
             ])
         self.register_cursor_axis(price_ax, data, plot_x, price_cursor_series)
-        if summary_ax is not None:
-            self.add_signal_summary_box(summary_ax, signal_summary, card_bottom=0.03, card_height=0.94)
-        if fundamentals_ax is not None:
-            self.draw_fundamental_dashboard(fundamentals_ax, fundamental_metrics, card_bottom=0.03, card_height=0.94)
+        if current_view == "Signal Summary":
+            self.add_signal_summary_box(view_ax, signal_summary, card_bottom=0.03, card_height=0.94)
+        elif current_view == "Extended Summary":
+            self.draw_risk_dashboard(
+                view_ax,
+                signal_summary,
+                card_bottom=0.03,
+                card_height=0.94,
+                include_context=True,
+            )
+        else:
+            self.draw_fundamental_dashboard(view_ax, fundamental_metrics, card_bottom=0.03, card_height=0.94)
         row = 1
         if self.show_rsi.get():
             rsi_ax = self.figure.add_subplot(chart_grid[row, 0], sharex=price_ax)

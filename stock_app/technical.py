@@ -2,7 +2,7 @@
 
 from typing import Any
 import pandas as pd
-from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, TECHNICAL_SCORE_WEIGHTS, TREND_STRUCTURE_SCORE_MAX
+from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, MOMENTUM_SCORE_MAX, PullbackRiskConfig, SETUP_QUALITY_SCORE_MAX, TECHNICAL_ASSESSMENT_WEAK_PERCENTAGES, TECHNICAL_SCORE_WEIGHTS, TREND_STRUCTURE_SCORE_MAX
 
 class TechnicalAnalysisMixin:
     @staticmethod
@@ -25,8 +25,8 @@ class TechnicalAnalysisMixin:
         setup_score: int | float | None,
         confirmation_score: int | float | None,
         trend_max: int | float = TREND_STRUCTURE_SCORE_MAX,
-        momentum_max: int | float = 3,
-        setup_max: int | float = 3,
+        momentum_max: int | float = MOMENTUM_SCORE_MAX,
+        setup_max: int | float = SETUP_QUALITY_SCORE_MAX,
         confirmation_max: int | float = CONFIRMATION_SCORE_MAX
     ) -> dict[str, Any]:
         inputs = {
@@ -62,6 +62,549 @@ class TechnicalAnalysisMixin:
         if score >= 30:
             return "Bearish"
         return "Strongly Bearish"
+
+    @classmethod
+    def calculate_atr_extension(
+        cls,
+        close: float | None,
+        ema20: float | None,
+        atr14: float | None
+    ) -> float | None:
+        if not all(cls.is_valid_number(value) for value in (close, ema20, atr14)):
+            return None
+        if atr14 <= 0:
+            return None
+        return (float(close) - float(ema20)) / float(atr14)
+
+    @staticmethod
+    def classify_atr_extension(extension: float | None) -> str:
+        if extension is None or pd.isna(extension):
+            return "N/A"
+        magnitude = abs(extension)
+        if magnitude > PullbackRiskConfig.ATR_EXTREME:
+            return "Extremely Extended"
+        if magnitude >= PullbackRiskConfig.ATR_EXTENDED:
+            return "Extended"
+        if magnitude >= PullbackRiskConfig.ATR_MODERATE:
+            return "Moderately Extended"
+        return "Normal"
+
+    @classmethod
+    def calculate_macd_histogram_state(cls, histogram: pd.Series) -> dict[str, Any]:
+        values = histogram.dropna()
+        if len(values) < 2:
+            return {"direction": "N/A", "falling_3_bars": False}
+        latest_change = values.iloc[-1] - values.iloc[-2]
+        direction = "Rising" if latest_change > 0 else "Falling" if latest_change < 0 else "Flat"
+        needed = PullbackRiskConfig.MACD_FALLING_BARS + 1
+        falling_3_bars = (
+            len(values) >= needed
+            and all(values.iloc[-offset] < values.iloc[-offset - 1] for offset in range(1, needed))
+        )
+        return {"direction": direction, "falling_3_bars": falling_3_bars}
+
+    @staticmethod
+    def detect_bearish_divergence(
+        close: pd.Series,
+        oscillator: pd.Series,
+        minimum_drop: float = 0.0
+    ) -> bool:
+        lookback = PullbackRiskConfig.LOOKBACK_BARS
+        aligned = pd.concat([close.rename("close"), oscillator.rename("oscillator")], axis=1)
+        if len(aligned) < lookback + 1:
+            return False
+        current = aligned.iloc[-1]
+        previous = aligned.iloc[-(lookback + 1):-1]
+        if previous["close"].dropna().empty:
+            return False
+        previous_high_index = previous["close"].idxmax()
+        previous_high = previous.loc[previous_high_index]
+        if (
+            pd.isna(current["close"])
+            or pd.isna(current["oscillator"])
+            or pd.isna(previous_high["oscillator"])
+            or current["close"] <= previous_high["close"]
+        ):
+            return False
+        return current["oscillator"] <= previous_high["oscillator"] - minimum_drop
+
+    @staticmethod
+    def detect_bollinger_breakout_failure(
+        close: pd.Series,
+        upper_band: pd.Series,
+        lower_band: pd.Series
+    ) -> bool:
+        aligned = pd.concat([close, upper_band, lower_band], axis=1).dropna()
+        if len(aligned) < 2:
+            return False
+        previous = aligned.iloc[-2]
+        current = aligned.iloc[-1]
+        return bool(
+            previous.iloc[0] > previous.iloc[1]
+            and current.iloc[2] <= current.iloc[0] <= current.iloc[1]
+        )
+
+    @staticmethod
+    def is_new_lookback_high(close: pd.Series) -> bool:
+        lookback = PullbackRiskConfig.LOOKBACK_BARS
+        values = close.dropna()
+        return len(values) >= lookback + 1 and values.iloc[-1] > values.iloc[-(lookback + 1):-1].max()
+
+    @classmethod
+    def detect_low_volume_new_high(cls, close: pd.Series, rvol: pd.Series) -> bool:
+        current_rvol = cls.latest_valid_value(rvol)
+        return (
+            cls.is_new_lookback_high(close)
+            and cls.is_valid_number(current_rvol)
+            and current_rvol < PullbackRiskConfig.LOW_RVOL
+        )
+
+    @staticmethod
+    def detect_spike_rejection_candle(data: pd.DataFrame) -> bool:
+        required = {"Open", "High", "Low", "Close"}
+        lookback = PullbackRiskConfig.LOOKBACK_BARS
+        if not required.issubset(data.columns) or len(data) < lookback + 1:
+            return False
+        row = data.iloc[-1]
+        if row[list(required)].isna().any():
+            return False
+        previous_high = data["High"].iloc[-(lookback + 1):-1].dropna()
+        if previous_high.empty or row["High"] <= previous_high.max():
+            return False
+        candle_range = row["High"] - row["Low"]
+        body = abs(row["Close"] - row["Open"])
+        if candle_range <= 0 or body <= 0:
+            return False
+        upper_wick = row["High"] - max(row["Open"], row["Close"])
+        closes_in_lower_half = row["Close"] <= row["Low"] + candle_range / 2
+        return bool(upper_wick >= 2 * body and closes_in_lower_half)
+
+    @staticmethod
+    def detect_failed_previous_high(data: pd.DataFrame) -> bool:
+        lookback = PullbackRiskConfig.LOOKBACK_BARS
+        if not {"High", "Close"}.issubset(data.columns) or len(data) < lookback + 1:
+            return False
+        previous_highs = data["High"].iloc[-(lookback + 1):-1].dropna()
+        current = data.iloc[-1]
+        if previous_highs.empty or pd.isna(current["High"]) or pd.isna(current["Close"]):
+            return False
+        previous_high = previous_highs.max()
+        return bool(current["High"] > previous_high and current["Close"] < previous_high)
+
+    @classmethod
+    def calculate_pullback_indicators(cls, data: pd.DataFrame) -> dict[str, Any]:
+        defaults = {
+            "atr_extension": None,
+            "atr_extension_state": "N/A",
+            "rsi_direction": "N/A",
+            "rsi_direction_available": False,
+            "current_rsi": None,
+            "rsi_above_75": False,
+            "rsi_above_80": False,
+            "rsi_falling_above_70": False,
+            "macd_histogram_direction": "N/A",
+            "macd_histogram_direction_available": False,
+            "macd_histogram_falling_3_bars": False,
+            "rsi_bearish_divergence": False,
+            "rsi_bearish_divergence_available": False,
+            "macd_bearish_divergence": False,
+            "macd_bearish_divergence_available": False,
+            "bollinger_breakout_failure": False,
+            "bollinger_breakout_failure_available": False,
+            "low_volume_new_high": False,
+            "low_volume_new_high_available": False,
+            "spike_rejection_candle": False,
+            "spike_rejection_candle_available": False,
+            "rising_price_low_volume": False,
+            "failed_previous_high": False,
+            "current_rvol": None,
+            "current_volume": None,
+            "current_volume_sma20": None,
+        }
+        if data is None or data.empty or "Close" not in data:
+            return defaults
+
+        close = data["Close"]
+        ema20 = cls.first_available_series(data, "DAILY_EMA20", "EMA20")
+        atr14 = cls.first_available_series(data, "DAILY_ATR14", "ATR14")
+        rsi = cls.first_available_series(data, "DAILY_RSI14", "RSI")
+        macd = cls.first_available_series(data, "DAILY_MACD", "MACD")
+        macd_signal = cls.first_available_series(data, "DAILY_MACD_SIGNAL", "MACD_SIGNAL")
+        volume = cls.first_available_series(data, "Volume")
+        volume_sma20 = cls.first_available_series(data, "DAILY_VOLUME_SMA20", "VOLUME_SMA20")
+        rvol = cls.first_available_series(data, "DAILY_RVOL20", "RVOL20", "RVOL")
+
+        current_close = cls.latest_valid_value(close)
+        current_extension = cls.calculate_atr_extension(
+            current_close,
+            cls.latest_valid_value(ema20),
+            cls.latest_valid_value(atr14),
+        )
+        rsi_values = rsi.dropna()
+        current_rsi = cls.latest_valid_value(rsi)
+        if len(rsi_values) >= 2:
+            rsi_change = rsi_values.iloc[-1] - rsi_values.iloc[-2]
+            rsi_direction = "Rising" if rsi_change > 0 else "Falling" if rsi_change < 0 else "Flat"
+        else:
+            rsi_direction = "N/A"
+
+        histogram = macd - macd_signal
+        macd_state = cls.calculate_macd_histogram_state(histogram)
+        if {"BB_UPPER", "BB_LOWER"}.issubset(data.columns):
+            upper_band = data["BB_UPPER"]
+            lower_band = data["BB_LOWER"]
+        else:
+            middle_band = close.rolling(PullbackRiskConfig.LOOKBACK_BARS).mean()
+            band_std = close.rolling(PullbackRiskConfig.LOOKBACK_BARS).std()
+            upper_band = middle_band + 2 * band_std
+            lower_band = middle_band - 2 * band_std
+
+        current_volume = cls.latest_valid_value(volume)
+        current_volume_sma20 = cls.latest_valid_value(volume_sma20)
+        current_rvol = cls.latest_valid_value(rvol)
+        if not cls.is_valid_number(current_rvol) and all(
+            cls.is_valid_number(value) for value in (current_volume, current_volume_sma20)
+        ) and current_volume_sma20 > 0:
+            current_rvol = current_volume / current_volume_sma20
+            rvol = pd.Series(index=data.index, dtype=float)
+            rvol.iloc[-1:] = current_rvol
+
+        close_values = close.dropna()
+        rising_price = len(close_values) >= 2 and close_values.iloc[-1] > close_values.iloc[-2]
+        rising_price_low_volume = (
+            rising_price
+            and cls.is_valid_number(current_volume)
+            and cls.is_valid_number(current_volume_sma20)
+            and current_volume < current_volume_sma20
+        )
+        rsi_divergence = cls.detect_bearish_divergence(
+            close,
+            rsi,
+            PullbackRiskConfig.RSI_DIVERGENCE_DROP,
+        )
+        macd_divergence = cls.detect_bearish_divergence(close, histogram)
+        bollinger_available = len(pd.concat([close, upper_band, lower_band], axis=1).dropna()) >= 2
+        lookback_available = len(close.dropna()) >= PullbackRiskConfig.LOOKBACK_BARS + 1
+        spike_available = (
+            {"Open", "High", "Low", "Close"}.issubset(data.columns)
+            and len(data) >= PullbackRiskConfig.LOOKBACK_BARS + 1
+            and not data.iloc[-1][["Open", "High", "Low", "Close"]].isna().any()
+        )
+
+        return {
+            **defaults,
+            "atr_extension": current_extension,
+            "atr_extension_state": cls.classify_atr_extension(current_extension),
+            "rsi_direction": rsi_direction,
+            "rsi_direction_available": len(rsi_values) >= 2,
+            "current_rsi": current_rsi,
+            "rsi_above_75": cls.is_valid_number(current_rsi) and current_rsi > PullbackRiskConfig.RSI_EXHAUSTED,
+            "rsi_above_80": cls.is_valid_number(current_rsi) and current_rsi > PullbackRiskConfig.RSI_EXTREME,
+            "rsi_falling_above_70": (
+                cls.is_valid_number(current_rsi)
+                and current_rsi > PullbackRiskConfig.RSI_ELEVATED
+                and rsi_direction == "Falling"
+            ),
+            "macd_histogram_direction": macd_state["direction"],
+            "macd_histogram_direction_available": len(histogram.dropna()) >= 2,
+            "macd_histogram_falling_3_bars": macd_state["falling_3_bars"],
+            "rsi_bearish_divergence": rsi_divergence,
+            "rsi_bearish_divergence_available": cls.has_bearish_divergence_history(close, rsi),
+            "macd_bearish_divergence": macd_divergence,
+            "macd_bearish_divergence_available": cls.has_bearish_divergence_history(close, histogram),
+            "bollinger_breakout_failure": cls.detect_bollinger_breakout_failure(close, upper_band, lower_band),
+            "bollinger_breakout_failure_available": bollinger_available,
+            "low_volume_new_high": cls.detect_low_volume_new_high(close, rvol),
+            "low_volume_new_high_available": lookback_available and cls.is_valid_number(current_rvol),
+            "spike_rejection_candle": cls.detect_spike_rejection_candle(data),
+            "spike_rejection_candle_available": spike_available,
+            "rising_price_low_volume": rising_price_low_volume,
+            "failed_previous_high": cls.detect_failed_previous_high(data),
+            "current_rvol": current_rvol,
+            "current_volume": current_volume,
+            "current_volume_sma20": current_volume_sma20,
+        }
+
+    @staticmethod
+    def classify_pullback_risk(score: int | float | None) -> str:
+        if score is None:
+            return "N/A"
+        if score >= 70:
+            return "High"
+        if score >= 50:
+            return "Elevated"
+        if score >= 25:
+            return "Moderate"
+        return "Low"
+
+    @classmethod
+    def calculate_pullback_risk(cls, indicators: dict[str, Any]) -> dict[str, Any]:
+        points = PullbackRiskConfig.POINTS
+        maximums = PullbackRiskConfig.CATEGORY_MAX
+        extension = indicators.get("atr_extension")
+        price_extension = 0
+        if cls.is_valid_number(extension):
+            if extension > PullbackRiskConfig.ATR_EXTREME:
+                price_extension = points["extension_above_3_atr"]
+            elif extension > PullbackRiskConfig.ATR_EXTENDED:
+                price_extension = points["extension_above_2_atr"]
+
+        rsi_exhaustion_points = 0
+        if indicators.get("rsi_above_80"):
+            rsi_exhaustion_points = points["rsi_above_80"]
+        elif indicators.get("rsi_above_75"):
+            rsi_exhaustion_points = points["rsi_above_75"]
+        rsi_direction_points = points["rsi_falling_above_70"] if indicators.get("rsi_falling_above_70") else 0
+        macd_falling_points = points["macd_histogram_falling_3"] if indicators.get("macd_histogram_falling_3_bars") else 0
+        divergence_active = indicators.get("rsi_bearish_divergence") or indicators.get("macd_bearish_divergence")
+        divergence_points = points["bearish_divergence"] if divergence_active else 0
+        momentum_raw = (
+            rsi_exhaustion_points
+            + rsi_direction_points
+            + macd_falling_points
+            + divergence_points
+        )
+        momentum = min(momentum_raw, maximums["momentum_exhaustion"])
+
+        low_volume_high_points = points["low_volume_new_high"] if indicators.get("low_volume_new_high") else 0
+        rising_low_volume_points = points["rising_price_low_volume"] if indicators.get("rising_price_low_volume") else 0
+        participation_raw = low_volume_high_points + rising_low_volume_points
+        participation = min(participation_raw, maximums["participation_risk"])
+
+        bollinger_points = points["bollinger_breakout_failure"] if indicators.get("bollinger_breakout_failure") else 0
+        rejection_points = points["spike_rejection_candle"] if indicators.get("spike_rejection_candle") else 0
+        failed_high_points = points["failed_previous_high"] if indicators.get("failed_previous_high") else 0
+        reversal_raw = bollinger_points + rejection_points + failed_high_points
+        reversal = min(reversal_raw, maximums["reversal_signals"])
+
+        categories = {
+            "price_extension": price_extension,
+            "momentum_exhaustion": momentum,
+            "participation_risk": participation,
+            "reversal_signals": reversal,
+        }
+        score = float(sum(categories.values()))
+        current_rsi = indicators.get("current_rsi")
+        current_rvol = indicators.get("current_rvol")
+        current_volume = indicators.get("current_volume")
+        current_volume_sma20 = indicators.get("current_volume_sma20")
+        details = {
+            "price_extension": [
+                {
+                    "metric": "ATR above EMA20",
+                    "points": price_extension,
+                    "observed": f"{extension:+.2f} ATR" if cls.is_valid_number(extension) else "Unavailable",
+                    "rule": ">2 ATR: +15; >3 ATR: +25",
+                }
+            ],
+            "momentum_exhaustion": [
+                {
+                    "metric": "RSI exhaustion",
+                    "points": rsi_exhaustion_points,
+                    "observed": f"{current_rsi:.1f}" if cls.is_valid_number(current_rsi) else "Unavailable",
+                    "rule": ">75: +10; >80: +15",
+                },
+                {
+                    "metric": "RSI falling above 70",
+                    "points": rsi_direction_points,
+                    "observed": indicators.get("rsi_direction", "N/A"),
+                    "rule": "Falling while >70: +5",
+                },
+                {
+                    "metric": "MACD histogram decline",
+                    "points": macd_falling_points,
+                    "observed": indicators.get("macd_histogram_direction", "N/A"),
+                    "rule": "Falling 3 bars: +10",
+                },
+                {
+                    "metric": "Bearish divergence",
+                    "points": divergence_points,
+                    "observed": (
+                        f"RSI {'Yes' if indicators.get('rsi_bearish_divergence') else 'No'}, "
+                        f"MACD {'Yes' if indicators.get('macd_bearish_divergence') else 'No'}"
+                    ),
+                    "rule": "Either divergence: +15",
+                },
+            ],
+            "participation_risk": [
+                {
+                    "metric": "Low-volume new high",
+                    "points": low_volume_high_points,
+                    "observed": f"{current_rvol:.2f}x RVOL" if cls.is_valid_number(current_rvol) else "Unavailable",
+                    "rule": "New 20-bar high and RVOL <0.8: +15",
+                },
+                {
+                    "metric": "Rising price, low volume",
+                    "points": rising_low_volume_points,
+                    "observed": (
+                        f"{current_volume:,.0f} vs {current_volume_sma20:,.0f} avg"
+                        if all(cls.is_valid_number(value) for value in (current_volume, current_volume_sma20))
+                        else "Unavailable"
+                    ),
+                    "rule": "Price rising and volume <SMA20: +5",
+                },
+            ],
+            "reversal_signals": [
+                {
+                    "metric": "Bollinger breakout failure",
+                    "points": bollinger_points,
+                    "observed": "Detected" if indicators.get("bollinger_breakout_failure") else "Not detected",
+                    "rule": "Close returns inside bands: +15",
+                },
+                {
+                    "metric": "Spike rejection candle",
+                    "points": rejection_points,
+                    "observed": "Detected" if indicators.get("spike_rejection_candle") else "Not detected",
+                    "rule": "New high with bearish rejection: +10",
+                },
+                {
+                    "metric": "Failed previous high",
+                    "points": failed_high_points,
+                    "observed": "Detected" if indicators.get("failed_previous_high") else "Not detected",
+                    "rule": "Trades above, closes below 20-bar high: +15",
+                },
+            ],
+        }
+        raw_categories = {
+            "price_extension": price_extension,
+            "momentum_exhaustion": momentum_raw,
+            "participation_risk": participation_raw,
+            "reversal_signals": reversal_raw,
+        }
+        reasons: list[str] = []
+        if cls.is_valid_number(extension) and extension > PullbackRiskConfig.ATR_EXTENDED:
+            reasons.append(f"Price is {extension:.1f} ATR above EMA20")
+        if indicators.get("macd_histogram_falling_3_bars"):
+            reasons.append("MACD histogram has fallen for 3 bars")
+        if indicators.get("low_volume_new_high"):
+            rvol = indicators.get("current_rvol")
+            reasons.append(
+                f"New high occurred on {rvol:.2f}x relative volume"
+                if cls.is_valid_number(rvol)
+                else "New high occurred on low relative volume"
+            )
+        if indicators.get("rsi_bearish_divergence") or indicators.get("macd_bearish_divergence"):
+            reasons.append("Bearish momentum divergence detected")
+        if indicators.get("bollinger_breakout_failure"):
+            reasons.append("Bollinger breakout failed")
+        if indicators.get("spike_rejection_candle"):
+            reasons.append("New high formed a rejection candle")
+        if indicators.get("failed_previous_high"):
+            reasons.append("Price rejected the previous 20-bar high")
+        if indicators.get("rsi_above_80"):
+            reasons.append("RSI is above 80")
+        elif indicators.get("rsi_above_75"):
+            reasons.append("RSI is above 75")
+
+        return {
+            "score": score,
+            "label": cls.classify_pullback_risk(score),
+            "categories": categories,
+            "raw_categories": raw_categories,
+            "details": details,
+            "key_reasons": reasons[:3],
+        }
+
+    @classmethod
+    def describe_technical_score_with_risk(
+        cls,
+        technical_score: int | float | None,
+        pullback_risk: int | float | None
+    ) -> str:
+        base_label = cls.classify_weighted_technical_score(technical_score)
+        if technical_score is None or pullback_risk is None:
+            return base_label
+        if technical_score >= 80:
+            if pullback_risk >= 70:
+                return "Bullish Trend — High Pullback Risk"
+            if pullback_risk >= 40:
+                return "Bullish but Extended"
+            return "Strongly Bullish"
+        if technical_score >= 65 and pullback_risk >= 50:
+            return "Bullish with Elevated Risk"
+        return base_label
+
+    @classmethod
+    def describe_category_aware_assessment(
+        cls,
+        technical_score: int | float | None,
+        weighted_categories: dict[str, dict[str, Any]] | None,
+        pullback_risk: int | float | None,
+        trend_context_label: str | None = None
+    ) -> str:
+        """Describe direction using the total, every category, and pullback risk."""
+        base_label = cls.describe_technical_score_with_risk(
+            technical_score,
+            pullback_risk,
+        )
+        if technical_score is None or not weighted_categories:
+            return base_label
+
+        percentages = {
+            name: details.get("percentage")
+            for name, details in weighted_categories.items()
+        }
+        if any(not cls.is_valid_number(percentages.get(name)) for name in ("trend", "momentum", "setup", "confirmation")):
+            return base_label
+
+        weak_labels = {
+            "trend": "Trend",
+            "momentum": "Momentum",
+            "setup": "Setup",
+            "confirmation": "Confirmation",
+        }
+        weak_categories = [
+            name
+            for name in ("trend", "momentum", "setup", "confirmation")
+            if percentages[name] < TECHNICAL_ASSESSMENT_WEAK_PERCENTAGES[name]
+        ]
+        friendly_contexts = {
+            "Confirmed Uptrend",
+            "Confirmed Downtrend",
+            "Early Recovery",
+            "Weak Recovery",
+            "Recovery Attempt",
+            "Reversal Attempt",
+            "Constructive / Improving",
+            "Improving, Not Confirmed",
+            "Bullish Pullback",
+            "Bearish Pullback",
+            "Pullback",
+            "Bullish, Losing Momentum",
+            "Bearish, Improving",
+            "Mixed Bearish",
+            "Mixed / Transition",
+            "Neutral / Transition",
+        }
+        context = trend_context_label if trend_context_label in friendly_contexts else None
+
+        def with_risk(assessment: str) -> str:
+            if pullback_risk is not None and pullback_risk >= 70:
+                return f"{assessment} / High Risk"
+            if pullback_risk is not None and pullback_risk >= 50:
+                return f"{assessment} / Elevated Risk"
+            if technical_score >= 80 and pullback_risk is not None and pullback_risk >= 40:
+                return f"{assessment} / Extended"
+            return assessment
+
+        if technical_score >= 65 and weak_categories:
+            weakest = sorted(weak_categories, key=lambda name: percentages[name])[:2]
+            weakness = " & ".join(weak_labels[name] for name in weakest)
+            assessment = f"{context or 'Bullish'} — {weakness} Weak"
+            return with_risk(assessment)
+
+        category_spread = max(percentages.values()) - min(percentages.values())
+        if context:
+            if weak_categories and category_spread >= 40:
+                weakest = sorted(weak_categories, key=lambda name: percentages[name])[:2]
+                weakness = " & ".join(weak_labels[name] for name in weakest)
+                return with_risk(f"{context} — {weakness} Weak")
+            return with_risk(context)
+        if 45 <= technical_score < 65 and category_spread >= 40:
+            return "Neutral / Mixed — Categories Diverge"
+        if technical_score < 45 and percentages["momentum"] >= 65 and percentages["trend"] < 45:
+            return "Bearish Trend — Momentum Improving"
+        return base_label
 
     @staticmethod
     def latest_valid_value(series):
@@ -101,6 +644,26 @@ class TechnicalAnalysisMixin:
             return None
         passed = sum(1 for check in valid_checks if check)
         return int((passed / len(valid_checks) * max_score) + 0.5)
+
+    @staticmethod
+    def score_active_checks(checks: list[bool | None]) -> tuple[int | None, int]:
+        valid_checks = [check for check in checks if check is not None]
+        if not valid_checks:
+            return None, 0
+        return sum(1 for check in valid_checks if check), len(valid_checks)
+
+    @staticmethod
+    def has_bearish_divergence_history(close: pd.Series, oscillator: pd.Series) -> bool:
+        lookback = PullbackRiskConfig.LOOKBACK_BARS
+        aligned = pd.concat([close.rename("close"), oscillator.rename("oscillator")], axis=1)
+        if len(aligned) < lookback + 1:
+            return False
+        current = aligned.iloc[-1]
+        previous = aligned.iloc[-(lookback + 1):-1]
+        if pd.isna(current["close"]) or pd.isna(current["oscillator"]) or previous["close"].dropna().empty:
+            return False
+        previous_high_index = previous["close"].idxmax()
+        return not pd.isna(previous.loc[previous_high_index, "oscillator"])
 
     @staticmethod
     def classify_trend_layer_score(score: int | None) -> str:
@@ -180,8 +743,8 @@ class TechnicalAnalysisMixin:
             cls.trend_layer_is_bearish(short_term_score)
             or trend_direction == "Deteriorating"
         )
-        momentum_weak = momentum_score is not None and momentum_score <= 1
-        confirmation_weak = confirmation_score is None or confirmation_score <= 1
+        momentum_weak = momentum_score is not None and momentum_score / MOMENTUM_SCORE_MAX < 0.50
+        confirmation_weak = confirmation_score is None or confirmation_score / CONFIRMATION_SCORE_MAX < 0.50
         return (
             long_bearish
             and medium_bearish
@@ -551,10 +1114,10 @@ class TechnicalAnalysisMixin:
         medium_mixed = cls.trend_layer_is_mixed(medium_term_score)
         all_bullish = short_bullish and medium_bullish and long_bullish
         all_bearish = short_bearish and medium_bearish and long_bearish
-        momentum_weak = momentum_score is not None and momentum_score <= 1
-        momentum_strong = momentum_score is not None and momentum_score >= 2
-        confirmation_weak = confirmation_score is not None and confirmation_score <= 1
-        confirmation_supportive = confirmation_score is not None and confirmation_score >= 2
+        momentum_weak = momentum_score is not None and momentum_score / MOMENTUM_SCORE_MAX < 0.50
+        momentum_strong = momentum_score is not None and momentum_score / MOMENTUM_SCORE_MAX >= 0.50
+        confirmation_weak = confirmation_score is not None and confirmation_score / CONFIRMATION_SCORE_MAX < 0.50
+        confirmation_supportive = confirmation_score is not None and confirmation_score / CONFIRMATION_SCORE_MAX >= 0.50
         recovery_phase = trend_phase in {"Early Recovery", "Recovery Attempt"}
         pullback_phase = trend_phase in {"Pullback", "Bullish Pullback", "Bearish Pullback"}
         if cls.is_strongly_bearish_setup(
@@ -661,7 +1224,9 @@ class TechnicalAnalysisMixin:
             "long_term_trend_label": "N/A",
             "trend_phase": "N/A",
             "momentum_score": None,
+            "momentum_max": MOMENTUM_SCORE_MAX,
             "quality_score": None,
+            "quality_max": SETUP_QUALITY_SCORE_MAX,
             "confirmation_score": None,
             "confirmation_max": CONFIRMATION_SCORE_MAX,
             "extended_total_score": None,
@@ -788,10 +1353,30 @@ class TechnicalAnalysisMixin:
             medium_term_score,
             long_term_score
         )
+        pullback_indicators = cls.calculate_pullback_indicators(data)
+        divergence_available = (
+            pullback_indicators["rsi_bearish_divergence_available"]
+            or pullback_indicators["macd_bearish_divergence_available"]
+        )
+        bearish_divergence = (
+            pullback_indicators["rsi_bearish_divergence"]
+            or pullback_indicators["macd_bearish_divergence"]
+        )
         momentum_checks = [
             cls.greater_than(rsi14, 50),
+            (
+                pullback_indicators["rsi_direction"] == "Rising"
+                if pullback_indicators["rsi_direction_available"]
+                else None
+            ),
             cls.greater_than(macd, macd_signal),
-            cls.greater_than(macd, 0)
+            cls.greater_than(macd, 0),
+            (
+                pullback_indicators["macd_histogram_direction"] == "Rising"
+                if pullback_indicators["macd_histogram_direction_available"]
+                else None
+            ),
+            not bearish_divergence if divergence_available else None,
         ]
         ema20_extension_ok = None
         if cls.is_valid_number(current_price) and cls.is_valid_number(ema20):
@@ -802,10 +1387,20 @@ class TechnicalAnalysisMixin:
         quality_checks = [
             cls.greater_than(volume, volume_sma20),
             ema20_extension_ok,
-            sma200_extension_ok
+            sma200_extension_ok,
+            (
+                abs(pullback_indicators["atr_extension"]) < PullbackRiskConfig.ATR_EXTENDED
+                if cls.is_valid_number(pullback_indicators["atr_extension"])
+                else None
+            ),
+            (
+                not pullback_indicators["bollinger_breakout_failure"]
+                if pullback_indicators["bollinger_breakout_failure_available"]
+                else None
+            ),
         ]
-        momentum_score = cls.score_optional_checks(momentum_checks, 3)
-        quality_score = cls.score_optional_checks(quality_checks, 3)
+        momentum_score, momentum_max = cls.score_active_checks(momentum_checks)
+        quality_score, quality_max = cls.score_active_checks(quality_checks)
         momentum_score = 0 if momentum_score is None else momentum_score
         quality_score = 0 if quality_score is None else quality_score
         score = trend_score + momentum_score + quality_score
@@ -821,15 +1416,28 @@ class TechnicalAnalysisMixin:
             atr_pct_healthy = ATR_PCT_HEALTHY_MIN <= atr_pct <= ATR_PCT_HEALTHY_MAX
         confirmation_checks = [
             rvol_confirmed,
+            (
+                not pullback_indicators["low_volume_new_high"]
+                if pullback_indicators["low_volume_new_high_available"]
+                else None
+            ),
+            (
+                not pullback_indicators["spike_rejection_candle"]
+                if pullback_indicators["spike_rejection_candle_available"]
+                else None
+            ),
             cls.greater_than(volume, volume_sma20),
             atr_pct_healthy
         ]
-        confirmation_score = cls.score_optional_checks(confirmation_checks, CONFIRMATION_SCORE_MAX)
+        confirmation_score, confirmation_max = cls.score_active_checks(confirmation_checks)
         weighted_result = cls.calculate_weighted_technical_score(
             trend_score,
             momentum_score,
             quality_score,
             confirmation_score,
+            momentum_max=momentum_max,
+            setup_max=quality_max,
+            confirmation_max=confirmation_max,
         )
         weighted_technical_score = weighted_result["score"]
         weighted_technical_rating = cls.classify_weighted_technical_score(weighted_technical_score)
@@ -871,7 +1479,9 @@ class TechnicalAnalysisMixin:
             "momentum_score": momentum_score,
             "quality_score": quality_score,
             "confirmation_score": confirmation_score,
-            "confirmation_max": CONFIRMATION_SCORE_MAX,
+            "momentum_max": momentum_max,
+            "quality_max": quality_max,
+            "confirmation_max": confirmation_max,
             "extended_total_score": extended_total_score,
             "extended_max_score": EXTENDED_BULLISH_SCORE_MAX,
             "extended_rating": extended_rating,
@@ -928,7 +1538,9 @@ class TechnicalAnalysisMixin:
             "trend_direction": "Stable",
             "trend_period_direction": "Stable",
             "daily_trend_score_momentum": None,
+            "daily_trend_score_momentum_max": MOMENTUM_SCORE_MAX,
             "daily_trend_score_quality": None,
+            "daily_trend_score_quality_max": SETUP_QUALITY_SCORE_MAX,
             "confirmation_score": None,
             "confirmation_max": CONFIRMATION_SCORE_MAX,
             "extended_total_score": None,
@@ -937,6 +1549,23 @@ class TechnicalAnalysisMixin:
             "weighted_technical_score": None,
             "weighted_technical_rating": "N/A",
             "weighted_contributions": {},
+            "overall_description": "N/A",
+            "pullback_risk_score": None,
+            "pullback_risk_label": "N/A",
+            "pullback_risk_categories": {},
+            "pullback_risk_raw_categories": {},
+            "pullback_risk_details": {},
+            "pullback_risk_reasons": [],
+            "atr_extension": None,
+            "atr_extension_state": "N/A",
+            "rsi_direction": "N/A",
+            "macd_histogram_direction": "N/A",
+            "macd_histogram_falling_3_bars": False,
+            "rsi_bearish_divergence": False,
+            "macd_bearish_divergence": False,
+            "bollinger_breakout_failure": False,
+            "low_volume_new_high": False,
+            "spike_rejection_candle": False,
             "ema9": None,
             "ema20": None,
             "ema50": None,
@@ -1021,6 +1650,13 @@ class TechnicalAnalysisMixin:
         total_score = structure_score["score"]
         if total_score is None:
             return empty_summary
+        pullback_indicators = cls.calculate_pullback_indicators(data)
+        pullback_risk = cls.calculate_pullback_risk(pullback_indicators)
+        overall_description = cls.describe_category_aware_assessment(
+            structure_score["weighted_technical_score"],
+            structure_score["weighted_contributions"],
+            pullback_risk["score"],
+        )
         daily_trend = structure_score["rating"]
         ema_stack_bullish = (
             cls.is_valid_number(ema20)
@@ -1128,7 +1764,9 @@ class TechnicalAnalysisMixin:
             "trend_direction": "Stable",
             "trend_period_direction": "Stable",
             "daily_trend_score_momentum": structure_score["momentum_score"],
+            "daily_trend_score_momentum_max": structure_score["momentum_max"],
             "daily_trend_score_quality": structure_score["quality_score"],
+            "daily_trend_score_quality_max": structure_score["quality_max"],
             "confirmation_score": structure_score["confirmation_score"],
             "confirmation_max": structure_score["confirmation_max"],
             "extended_total_score": structure_score["extended_total_score"],
@@ -1137,6 +1775,23 @@ class TechnicalAnalysisMixin:
             "weighted_technical_score": structure_score["weighted_technical_score"],
             "weighted_technical_rating": structure_score["weighted_technical_rating"],
             "weighted_contributions": structure_score["weighted_contributions"],
+            "overall_description": overall_description,
+            "pullback_risk_score": pullback_risk["score"],
+            "pullback_risk_label": pullback_risk["label"],
+            "pullback_risk_categories": pullback_risk["categories"],
+            "pullback_risk_raw_categories": pullback_risk["raw_categories"],
+            "pullback_risk_details": pullback_risk["details"],
+            "pullback_risk_reasons": pullback_risk["key_reasons"],
+            "atr_extension": pullback_indicators["atr_extension"],
+            "atr_extension_state": pullback_indicators["atr_extension_state"],
+            "rsi_direction": pullback_indicators["rsi_direction"],
+            "macd_histogram_direction": pullback_indicators["macd_histogram_direction"],
+            "macd_histogram_falling_3_bars": pullback_indicators["macd_histogram_falling_3_bars"],
+            "rsi_bearish_divergence": pullback_indicators["rsi_bearish_divergence"],
+            "macd_bearish_divergence": pullback_indicators["macd_bearish_divergence"],
+            "bollinger_breakout_failure": pullback_indicators["bollinger_breakout_failure"],
+            "low_volume_new_high": pullback_indicators["low_volume_new_high"],
+            "spike_rejection_candle": pullback_indicators["spike_rejection_candle"],
             "ema9": ema9,
             "ema20": ema20,
             "ema50": ema50,
@@ -1258,6 +1913,12 @@ class TechnicalAnalysisMixin:
             momentum_score=interval_summary.get("daily_trend_score_momentum"),
             confirmation_score=interval_summary.get("confirmation_score")
         )
+        interval_summary["overall_description"] = cls.describe_category_aware_assessment(
+            interval_summary.get("weighted_technical_score"),
+            interval_summary.get("weighted_contributions"),
+            interval_summary.get("pullback_risk_score"),
+            trend_context_label=interval_summary.get("daily_trend"),
+        )
         fundamentals = fundamentals or {}
         valuation = fundamentals.get("valuation_view", {}).get("value", "Unknown")
         business_health = fundamentals.get("business_health", {}).get("value", "Unknown")
@@ -1377,8 +2038,8 @@ class TechnicalAnalysisMixin:
         score_specs = [
             ("Score", "weighted_technical_score", 100),
             ("Trend", "daily_trend_score_trend", "daily_trend_score_trend_max"),
-            ("Momentum", "daily_trend_score_momentum", 3),
-            ("Setup Quality", "daily_trend_score_quality", 3),
+            ("Momentum", "daily_trend_score_momentum", "daily_trend_score_momentum_max"),
+            ("Setup Quality", "daily_trend_score_quality", "daily_trend_score_quality_max"),
             ("Confirmation", "confirmation_score", "confirmation_max")
         ]
         rows: list[dict[str, str]] = []
@@ -1428,6 +2089,7 @@ class TechnicalAnalysisMixin:
         ema26 = data["Close"].ewm(span=26, adjust=False).mean()
         data["DAILY_MACD"] = ema12 - ema26
         data["DAILY_MACD_SIGNAL"] = data["DAILY_MACD"].ewm(span=9, adjust=False).mean()
+        data["DAILY_MACD_HISTOGRAM"] = data["DAILY_MACD"] - data["DAILY_MACD_SIGNAL"]
         if "Volume" in data.columns:
             data["DAILY_VOLUME_SMA20"] = data["Volume"].rolling(20).mean()
             data["DAILY_RVOL20"] = data["Volume"] / data["DAILY_VOLUME_SMA20"]
@@ -1474,4 +2136,5 @@ class TechnicalAnalysisMixin:
         ema26 = data["Close"].ewm(span=26, adjust=False).mean()
         data["MACD"] = ema12 - ema26
         data["MACD_SIGNAL"] = data["MACD"].ewm(span=9, adjust=False).mean()
+        data["MACD_HISTOGRAM"] = data["MACD"] - data["MACD_SIGNAL"]
         return data
