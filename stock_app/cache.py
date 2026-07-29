@@ -7,7 +7,7 @@ from .time_utils import host_now, to_host_naive_timestamp
 
 def build_cache_key(ticker, period, interval, download_interval):
     cache_parts = {
-        "version": 4,
+        "version": 5,
         "ticker": ticker,
         "period": period,
         "interval": interval,

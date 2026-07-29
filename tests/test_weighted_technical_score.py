@@ -1,6 +1,11 @@
 import unittest
 
-from stock_app.config import TECHNICAL_SCORE_WEIGHTS
+from stock_app.config import (
+    CONFIRMATION_SCORE_MAX,
+    MOMENTUM_SCORE_MAX,
+    SETUP_QUALITY_SCORE_MAX,
+    TECHNICAL_SCORE_WEIGHTS,
+)
 from stock_app.technical import TechnicalAnalysisMixin
 
 
@@ -8,8 +13,27 @@ class WeightedTechnicalScoreTests(unittest.TestCase):
     def test_weights_add_up_to_one(self):
         self.assertAlmostEqual(sum(TECHNICAL_SCORE_WEIGHTS.values()), 1.0)
 
+    def test_default_category_maximums_reflect_scored_criteria(self):
+        result = TechnicalAnalysisMixin.calculate_weighted_technical_score(15, 6, 5, 5)
+
+        self.assertEqual(MOMENTUM_SCORE_MAX, 6)
+        self.assertEqual(SETUP_QUALITY_SCORE_MAX, 5)
+        self.assertEqual(CONFIRMATION_SCORE_MAX, 5)
+        self.assertEqual(result["score"], 100.0)
+        self.assertEqual(result["categories"]["momentum"]["max_points"], 6)
+        self.assertEqual(result["categories"]["setup"]["max_points"], 5)
+        self.assertEqual(result["categories"]["confirmation"]["max_points"], 5)
+
     def test_normalizes_different_category_maximums_and_contributions(self):
-        result = TechnicalAnalysisMixin.calculate_weighted_technical_score(15, 3, 2, 1)
+        result = TechnicalAnalysisMixin.calculate_weighted_technical_score(
+            15,
+            3,
+            2,
+            1,
+            momentum_max=3,
+            setup_max=3,
+            confirmation_max=3,
+        )
         self.assertAlmostEqual(result["categories"]["trend"]["percentage"], 100.0)
         self.assertAlmostEqual(result["categories"]["trend"]["contribution"], 40.0)
         self.assertAlmostEqual(result["categories"]["setup"]["percentage"], 200 / 3)

@@ -263,20 +263,9 @@ class MarketDataMixin:
         if interval in {"5m", "15m", "30m"}:
             return "60d"
         if interval == "1h":
-            warmup_periods = {
-                "1h": "3mo",
-                "2h": "3mo",
-                "4h": "3mo",
-                "1d": "3mo",
-                "1wk": "3mo",
-                "2wk": "3mo",
-                "1mo": "3mo",
-                "3mo": "6mo",
-                "6mo": "1y",
-                "1y": "2y",
-                "2y": "2y"
-            }
-            return warmup_periods.get(period, period)
+            # Period-based 1h downloads can be shorter than requested. Use an
+            # explicit start so the indicator warm-up is deterministic.
+            return None
         if period in {"1h", "2h", "4h", "1d", "1wk", "2wk", "1mo"}:
             return "1mo"
         return period
@@ -303,6 +292,10 @@ class MarketDataMixin:
 
     @staticmethod
     def get_download_start(visible_start, interval):
+        if interval == "1h":
+            # Roughly 29 regular US trading days contain 200 hourly bars.
+            # Sixty calendar days also leave room for weekends and holidays.
+            return visible_start - pd.DateOffset(days=60)
         if interval in INTRADAY_INTERVALS:
             return visible_start
         if interval == "1wk":
