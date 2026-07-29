@@ -3,7 +3,7 @@
 from typing import Any
 import pandas as pd
 from matplotlib.patches import FancyBboxPatch
-from .config import CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, TREND_STRUCTURE_SCORE_MAX
+from .config import CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, TECHNICAL_SCORE_WEIGHTS, TREND_STRUCTURE_SCORE_MAX
 
 class SignalSummaryChartMixin:
     def add_signal_summary_box(
@@ -91,13 +91,22 @@ class SignalSummaryChartMixin:
         confirmation_max = summary.get("confirmation_max", CONFIRMATION_SCORE_MAX)
         extended_total_score = summary.get("extended_total_score")
         extended_max_score = summary.get("extended_max_score", EXTENDED_BULLISH_SCORE_MAX)
-        extended_rating = summary.get("extended_rating", "N/A")
-        verdict_text = extended_rating if extended_rating != "N/A" else trend_label
-        extended_score_text = "N/A" if extended_total_score is None else f"{int(extended_total_score)}/{extended_max_score}"
+        weighted_score = summary.get("weighted_technical_score")
+        verdict_text = summary.get("weighted_technical_rating", "N/A")
+        if verdict_text == "N/A":
+            verdict_text = trend_label
+        extended_score_text = "N/A" if weighted_score is None else f"{int(weighted_score + 0.5)}/100"
         rvol20 = summary.get("daily_rvol20")
         rvol20_text = "N/A" if rvol20 is None or pd.isna(rvol20) else f"{rvol20:.2f}x"
         trend_phase = summary.get("trend_phase", "N/A")
         trend_direction = summary.get("trend_direction", "Stable")
+        verdict_colors = {
+            "Strongly Bullish": "#16a34a",
+            "Bullish": "#65a30d",
+            "Neutral / Mixed": "#64748b",
+            "Bearish": "#f97316",
+            "Strongly Bearish": "#dc2626",
+        }
 
         def score_color(passed: bool | None) -> str:
             if passed is None:
@@ -572,7 +581,7 @@ class SignalSummaryChartMixin:
         card_width = 0.94
         card_right = card_left + card_width
         card_top = card_bottom + card_height
-        verdict_color = status_color(verdict_text)
+        verdict_color = verdict_colors.get(verdict_text, status_color(verdict_text))
         previous_change_title = f"Since {summary.get('score_changes_previous_title', 'Previous Bar')}"
         score_change_groups = [
             (previous_change_title, summary.get("score_changes_last_day", [])),
@@ -642,6 +651,22 @@ class SignalSummaryChartMixin:
             {"type": "signal", "label": verdict_text, "color": verdict_color, "height": 1.66},
             {"type": "spacer", "height": 0.18},
             header_metric_block("Score", extended_score_text, layout["left_x"], layout["header_metric_value_x"], verdict_color),
+            {
+                "type": "weighted_summary",
+                "label": (
+                    f"{TECHNICAL_SCORE_WEIGHTS['trend']:.0%} Trend Structure,  "
+                    f"{TECHNICAL_SCORE_WEIGHTS['momentum']:.0%} Momentum"
+                ),
+                "height": 0.92,
+            },
+            {
+                "type": "weighted_summary",
+                "label": (
+                    f"{TECHNICAL_SCORE_WEIGHTS['setup']:.0%} Setup Quality,  "
+                    f"{TECHNICAL_SCORE_WEIGHTS['confirmation']:.0%} Confirmation"
+                ),
+                "height": 0.92,
+            },
             {"type": "divider", "height": 0.44},
             {"type": "key_reason_header", "label": "Key Reasons", "height": 1.12}
         ]
@@ -839,6 +864,9 @@ class SignalSummaryChartMixin:
                 _next_y = block["next_y"]
             elif block_type == "header_metric":
                 _next_y = draw_header_metric(ax, block)
+            elif block_type == "weighted_summary":
+                add_text(x=layout["left_x"], y=block["y"], s=block["label"], ha="left", va="top", **style_map["metric_label"])
+                _next_y = block["next_y"]
             elif block_type == "key_reason_header":
                 add_text(x=layout["left_x"], y=block["y"], s=block["label"], ha="left", va="top", **style_map["section_header"])
                 _next_y = block["next_y"]

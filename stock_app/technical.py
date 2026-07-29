@@ -2,9 +2,67 @@
 
 from typing import Any
 import pandas as pd
-from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, TREND_STRUCTURE_SCORE_MAX
+from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, TECHNICAL_SCORE_WEIGHTS, TREND_STRUCTURE_SCORE_MAX
 
 class TechnicalAnalysisMixin:
+    @staticmethod
+    def calculate_weighted_category_score(
+        earned_points: int | float | None,
+        max_points: int | float,
+        weight: float
+    ) -> dict[str, float]:
+        percentage = 0.0 if earned_points is None or max_points <= 0 else float(earned_points) / max_points * 100.0
+        return {
+            "percentage": percentage,
+            "contribution": percentage * weight,
+        }
+
+    @classmethod
+    def calculate_weighted_technical_score(
+        cls,
+        trend_score: int | float | None,
+        momentum_score: int | float | None,
+        setup_score: int | float | None,
+        confirmation_score: int | float | None,
+        trend_max: int | float = TREND_STRUCTURE_SCORE_MAX,
+        momentum_max: int | float = 3,
+        setup_max: int | float = 3,
+        confirmation_max: int | float = CONFIRMATION_SCORE_MAX
+    ) -> dict[str, Any]:
+        inputs = {
+            "trend": (trend_score, trend_max),
+            "momentum": (momentum_score, momentum_max),
+            "setup": (setup_score, setup_max),
+            "confirmation": (confirmation_score, confirmation_max),
+        }
+        categories = {
+            name: {
+                "earned_points": earned,
+                "max_points": maximum,
+                "weight": TECHNICAL_SCORE_WEIGHTS[name],
+                **cls.calculate_weighted_category_score(earned, maximum, TECHNICAL_SCORE_WEIGHTS[name]),
+            }
+            for name, (earned, maximum) in inputs.items()
+        }
+        return {
+            "score": sum(category["contribution"] for category in categories.values()),
+            "categories": categories,
+        }
+
+    @staticmethod
+    def classify_weighted_technical_score(score: int | float | None) -> str:
+        if score is None:
+            return "N/A"
+        if score >= 80:
+            return "Strongly Bullish"
+        if score >= 65:
+            return "Bullish"
+        if score >= 45:
+            return "Neutral / Mixed"
+        if score >= 30:
+            return "Bearish"
+        return "Strongly Bearish"
+
     @staticmethod
     def latest_valid_value(series):
         values = series.dropna()
@@ -609,6 +667,9 @@ class TechnicalAnalysisMixin:
             "extended_total_score": None,
             "extended_max_score": EXTENDED_BULLISH_SCORE_MAX,
             "extended_rating": "N/A",
+            "weighted_technical_score": None,
+            "weighted_technical_rating": "N/A",
+            "weighted_contributions": {},
             "current_price": None,
             "ema9": None,
             "ema12": None,
@@ -764,6 +825,14 @@ class TechnicalAnalysisMixin:
             atr_pct_healthy
         ]
         confirmation_score = cls.score_optional_checks(confirmation_checks, CONFIRMATION_SCORE_MAX)
+        weighted_result = cls.calculate_weighted_technical_score(
+            trend_score,
+            momentum_score,
+            quality_score,
+            confirmation_score,
+        )
+        weighted_technical_score = weighted_result["score"]
+        weighted_technical_rating = cls.classify_weighted_technical_score(weighted_technical_score)
         if confirmation_score is not None:
             extended_total_score = score + confirmation_score
             extended_rating = cls.classify_extended_bullish_score(
@@ -806,6 +875,9 @@ class TechnicalAnalysisMixin:
             "extended_total_score": extended_total_score,
             "extended_max_score": EXTENDED_BULLISH_SCORE_MAX,
             "extended_rating": extended_rating,
+            "weighted_technical_score": weighted_technical_score,
+            "weighted_technical_rating": weighted_technical_rating,
+            "weighted_contributions": weighted_result["categories"],
             "current_price": current_price,
             "ema9": ema9,
             "ema12": ema12,
@@ -862,6 +934,9 @@ class TechnicalAnalysisMixin:
             "extended_total_score": None,
             "extended_max_score": EXTENDED_BULLISH_SCORE_MAX,
             "extended_rating": "N/A",
+            "weighted_technical_score": None,
+            "weighted_technical_rating": "N/A",
+            "weighted_contributions": {},
             "ema9": None,
             "ema20": None,
             "ema50": None,
@@ -1059,6 +1134,9 @@ class TechnicalAnalysisMixin:
             "extended_total_score": structure_score["extended_total_score"],
             "extended_max_score": structure_score["extended_max_score"],
             "extended_rating": structure_score["extended_rating"],
+            "weighted_technical_score": structure_score["weighted_technical_score"],
+            "weighted_technical_rating": structure_score["weighted_technical_rating"],
+            "weighted_contributions": structure_score["weighted_contributions"],
             "ema9": ema9,
             "ema20": ema20,
             "ema50": ema50,
@@ -1297,7 +1375,7 @@ class TechnicalAnalysisMixin:
         if not baseline_summary:
             return []
         score_specs = [
-            ("Score", "extended_total_score", "extended_max_score"),
+            ("Score", "weighted_technical_score", 100),
             ("Trend", "daily_trend_score_trend", "daily_trend_score_trend_max"),
             ("Momentum", "daily_trend_score_momentum", 3),
             ("Setup Quality", "daily_trend_score_quality", 3),
@@ -1309,8 +1387,8 @@ class TechnicalAnalysisMixin:
             baseline_value = baseline_summary.get(score_key)
             if current_value is None or baseline_value is None:
                 continue
-            current_score = int(current_value)
-            baseline_score = int(baseline_value)
+            current_score = float(current_value)
+            baseline_score = float(baseline_value)
             if current_score == baseline_score:
                 continue
             max_score = (
@@ -1323,9 +1401,11 @@ class TechnicalAnalysisMixin:
             improved = current_score > baseline_score
             arrow = "▲" if improved else "▼"
             display_label = label
+            displayed_current = int(current_score + 0.5) if label == "Score" else int(current_score)
+            displayed_baseline = int(baseline_score + 0.5) if label == "Score" else int(baseline_score)
             rows.append({
                 "label": f"{arrow} {display_label}",
-                "value": f"{baseline_score}/{int(max_score)} → {current_score}/{int(max_score)}",
+                "value": f"{displayed_baseline}/{int(max_score)} → {displayed_current}/{int(max_score)}",
                 "color": "#16a34a" if improved else "#dc2626"
             })
         return rows
