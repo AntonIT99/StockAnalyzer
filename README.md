@@ -26,9 +26,11 @@ Available periods:
 
 ```text
 1h
+2h
+4h
 1d
-5d
-15d
+1wk
+2wk
 1mo
 3mo
 6mo
@@ -65,6 +67,8 @@ The `6mo` and `1y` intervals are calculated by downloading daily data and resamp
 Choose `Custom` to enter explicit start and end dates. The interval dropdown then uses the rules for the smallest standard period that covers the custom range.
 
 The interval dropdown only shows intervals that are valid for the selected period. Yahoo Finance limits `1m` data to roughly 8 days per request, so `1m` is only shown for short periods.
+
+The `1h`, `2h`, and `4h` periods show the latest one, two, or four hours of available trading bars. Closed-market time and weekends do not leave these charts empty or reduce their requested bar count.
 
 Yahoo Finance does not provide a historical `1s` interval through `yfinance`, so second-by-second charting is not available in this app.
 

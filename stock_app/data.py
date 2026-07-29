@@ -1,8 +1,10 @@
 """Market data download, cache, and date-window handling."""
 
+import math
+
 import yfinance as yf
 import pandas as pd
-from .config import CUSTOM_PERIOD, DAILY_SIGNAL_PERIOD, DOWNLOAD_INTERVALS, INTERVAL_MAX_LOOKBACKS, INTRADAY_INTERVALS, MAX_MOVING_AVERAGE_WINDOW, PERIOD_DURATIONS, RESAMPLE_RULES
+from .config import CUSTOM_PERIOD, DAILY_SIGNAL_PERIOD, DOWNLOAD_INTERVALS, INTERVAL_DURATIONS, INTERVAL_MAX_LOOKBACKS, INTRADAY_INTERVALS, MAX_MOVING_AVERAGE_WINDOW, PERIOD_DURATIONS, RESAMPLE_RULES
 
 class MarketDataMixin:
     def download_data(self):
@@ -52,7 +54,20 @@ class MarketDataMixin:
             data = self.append_missing_daily_bars_from_intraday(ticker, data)
         if interval in RESAMPLE_RULES:
             data = self.resample_ohlcv(data, RESAMPLE_RULES[interval])
-        return self.drop_incomplete_price_rows(data), visible_start, visible_end
+        data = self.drop_incomplete_price_rows(data)
+        visible_start = self.anchor_short_period_to_latest_bars(data, visible_start)
+        return data, visible_start, visible_end
+
+    def anchor_short_period_to_latest_bars(self, data: pd.DataFrame, visible_start):
+        """Keep short hour periods useful when the market is not currently trading."""
+        period = self.period_var.get()
+        if period not in {"1h", "2h", "4h"} or data is None or data.empty:
+            return visible_start
+        period_duration = PERIOD_DURATIONS[period]
+        interval_duration = INTERVAL_DURATIONS[self.interval_var.get()]
+        required_bars = max(1, math.ceil(period_duration / interval_duration))
+        start_position = max(0, len(data.index) - required_bars)
+        return pd.Timestamp(data.index[start_position])
 
     def append_missing_daily_bars_from_intraday(self, ticker: str, data: pd.DataFrame) -> pd.DataFrame:
         if data.empty:
@@ -158,6 +173,8 @@ class MarketDataMixin:
         end = self.host_now()
         period_offsets = {
             "1h": pd.DateOffset(hours=1),
+            "2h": pd.DateOffset(hours=2),
+            "4h": pd.DateOffset(hours=4),
             "1d": pd.DateOffset(days=1),
             "1wk": pd.DateOffset(weeks=1),
             "2wk": pd.DateOffset(weeks=2),
@@ -244,6 +261,8 @@ class MarketDataMixin:
         if interval == "1h":
             warmup_periods = {
                 "1h": "3mo",
+                "2h": "3mo",
+                "4h": "3mo",
                 "1d": "3mo",
                 "1wk": "3mo",
                 "2wk": "3mo",
@@ -254,7 +273,7 @@ class MarketDataMixin:
                 "2y": "2y"
             }
             return warmup_periods.get(period, period)
-        if period in {"1h", "1d", "1wk", "2wk", "1mo"}:
+        if period in {"1h", "2h", "4h", "1d", "1wk", "2wk", "1mo"}:
             return "1mo"
         return period
 
