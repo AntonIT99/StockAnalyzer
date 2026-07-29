@@ -1,9 +1,11 @@
 """Period, interval, and lookback selection rules."""
 
-from .config import CUSTOM_PERIOD, INTERVAL_DURATIONS, INTERVAL_MAX_LOOKBACKS, INTERVAL_OPTIONS, PERIOD_DURATIONS, PERIOD_OPTIONS
+from .config import AUTO_SELECT_PERIOD, AUTO_SELECT_PERIODS_BY_INTERVAL, CUSTOM_PERIOD, INTERVAL_DURATIONS, INTERVAL_MAX_LOOKBACKS, INTERVAL_OPTIONS, PERIOD_DURATIONS, PERIOD_OPTIONS
 
 class PeriodSelectionMixin:
     def get_allowed_intervals_for_current_period(self):
+        if self.period_var.get() == AUTO_SELECT_PERIOD:
+            return list(AUTO_SELECT_PERIODS_BY_INTERVAL)
         allowed_intervals = self.get_allowed_intervals(
             self.get_interval_rule_period(),
             self.get_interval_rule_period_duration()
@@ -48,10 +50,22 @@ class PeriodSelectionMixin:
         return visible_start >= oldest_allowed_start
 
     def get_interval_rule_period(self):
+        if self.period_var.get() == AUTO_SELECT_PERIOD:
+            return self.get_effective_period()
         if self.period_var.get() != CUSTOM_PERIOD:
             return self.period_var.get()
         custom_duration = self.get_custom_period_duration(default_period="6mo")
         return self.get_smallest_covering_standard_period(custom_duration)
+
+    def get_effective_period(self):
+        """Return the actual period used when the user selects Auto-Select."""
+        if self.period_var.get() != AUTO_SELECT_PERIOD:
+            return self.period_var.get()
+        interval = self.interval_var.get()
+        try:
+            return AUTO_SELECT_PERIODS_BY_INTERVAL[interval]
+        except KeyError as exc:
+            raise ValueError(f"No Auto-Select period is configured for interval: {interval}") from exc
 
     def get_interval_rule_period_duration(self):
         return PERIOD_DURATIONS.get(self.get_interval_rule_period())

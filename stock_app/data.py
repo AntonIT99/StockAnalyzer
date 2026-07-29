@@ -4,7 +4,7 @@ import math
 
 import yfinance as yf
 import pandas as pd
-from .config import CUSTOM_PERIOD, DAILY_SIGNAL_PERIOD, DOWNLOAD_INTERVALS, INTERVAL_DURATIONS, INTERVAL_MAX_LOOKBACKS, INTRADAY_INTERVALS, MAX_MOVING_AVERAGE_WINDOW, PERIOD_DURATIONS, RESAMPLE_RULES
+from .config import AUTO_SELECT_PERIOD, CUSTOM_PERIOD, DAILY_SIGNAL_PERIOD, DOWNLOAD_INTERVALS, INTERVAL_DURATIONS, INTERVAL_MAX_LOOKBACKS, INTRADAY_INTERVALS, MAX_MOVING_AVERAGE_WINDOW, PERIOD_DURATIONS, RESAMPLE_RULES
 
 class MarketDataMixin:
     def download_data(self):
@@ -21,7 +21,7 @@ class MarketDataMixin:
         }
         if visible_start is None:
             self.validate_period_interval(visible_start, interval, interval_rule_period, interval_rule_duration)
-            download_kwargs["period"] = self.period_var.get()
+            download_kwargs["period"] = interval_rule_period
         elif self.period_var.get() == CUSTOM_PERIOD:
             self.validate_period_interval(visible_start, interval, interval_rule_period, interval_rule_duration)
             download_kwargs["start"] = self.get_download_start(visible_start, interval)
@@ -60,7 +60,7 @@ class MarketDataMixin:
 
     def anchor_short_period_to_latest_bars(self, data: pd.DataFrame, visible_start):
         """Keep short hour periods useful when the market is not currently trading."""
-        period = self.period_var.get()
+        period = self.get_effective_period()
         if period not in {"1h", "2h", "4h"} or data is None or data.empty:
             return visible_start
         period_duration = PERIOD_DURATIONS[period]
@@ -169,16 +169,18 @@ class MarketDataMixin:
         return ticker
 
     def get_visible_start(self):
-        period = self.period_var.get()
+        period = self.get_effective_period()
         end = self.host_now()
         period_offsets = {
             "1h": pd.DateOffset(hours=1),
             "2h": pd.DateOffset(hours=2),
             "4h": pd.DateOffset(hours=4),
             "1d": pd.DateOffset(days=1),
+            "2d": pd.DateOffset(days=2),
             "1wk": pd.DateOffset(weeks=1),
             "2wk": pd.DateOffset(weeks=2),
             "1mo": pd.DateOffset(months=1),
+            "2mo": pd.DateOffset(months=2),
             "3mo": pd.DateOffset(months=3),
             "6mo": pd.DateOffset(months=6),
             "1y": pd.DateOffset(years=1),
@@ -233,6 +235,8 @@ class MarketDataMixin:
         return parsed.normalize()
 
     def get_cache_period_key(self, visible_start, visible_end):
+        if self.period_var.get() == AUTO_SELECT_PERIOD:
+            return f"{AUTO_SELECT_PERIOD}:{self.get_effective_period()}"
         if self.period_var.get() != CUSTOM_PERIOD:
             return self.period_var.get()
         return (

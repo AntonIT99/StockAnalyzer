@@ -21,18 +21,34 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIR = PROJECT_ROOT / ".stock_cache"
 SETTINGS_PATH = PROJECT_ROOT / ".stock_settings.json"
 CUSTOM_PERIOD = "Custom"
+AUTO_SELECT_PERIOD = "Auto-Select"
+AUTO_SELECT_PERIODS_BY_INTERVAL = {
+    "1m": "4h",
+    "2m": "1d",
+    "5m": "2d",
+    "15m": "2wk",
+    "30m": "1mo",
+    "1h": "2mo",
+    "1d": "1y",
+    "1wk": "4y",
+    "1mo": "max",
+    "3mo": "max",
+    "6mo": "max",
+}
 INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h"}
 COMPRESSED_AXIS_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d"}
-PERIOD_OPTIONS = ["1h", "2h", "4h", "1d", "1wk", "2wk", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", CUSTOM_PERIOD, "max"]
+PERIOD_OPTIONS = [AUTO_SELECT_PERIOD, "1h", "2h", "4h", "1d", "2d", "1wk", "2wk", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "10y", CUSTOM_PERIOD, "max"]
 INTERVAL_OPTIONS = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo", "3mo", "6mo", "1y"]
 PERIOD_DURATIONS = {
     "1h": pd.Timedelta(hours=1),
     "2h": pd.Timedelta(hours=2),
     "4h": pd.Timedelta(hours=4),
     "1d": pd.Timedelta(days=1),
+    "2d": pd.Timedelta(days=2),
     "1wk": pd.Timedelta(weeks=1),
     "2wk": pd.Timedelta(weeks=2),
     "1mo": pd.Timedelta(days=30),
+    "2mo": pd.Timedelta(days=60),
     "3mo": pd.Timedelta(days=90),
     "6mo": pd.Timedelta(days=180),
     "1y": pd.Timedelta(days=365),
