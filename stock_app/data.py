@@ -4,6 +4,7 @@ import math
 
 import yfinance as yf
 import pandas as pd
+from .ohlcv import mark_volume_completion
 from .config import AUTO_SELECT_PERIOD, CUSTOM_PERIOD, DAILY_SIGNAL_PERIOD, DOWNLOAD_INTERVALS, INTERVAL_DURATIONS, INTERVAL_MAX_LOOKBACKS, INTRADAY_INTERVALS, MAX_MOVING_AVERAGE_WINDOW, PERIOD_DURATIONS, RESAMPLE_RULES
 
 class MarketDataMixin:
@@ -55,6 +56,7 @@ class MarketDataMixin:
         if interval in RESAMPLE_RULES:
             data = self.resample_ohlcv(data, RESAMPLE_RULES[interval])
         data = self.drop_incomplete_price_rows(data)
+        data = mark_volume_completion(data, interval, self.host_now())
         visible_start = self.anchor_short_period_to_latest_bars(data, visible_start)
         return data, visible_start, visible_end
 
@@ -97,9 +99,11 @@ class MarketDataMixin:
             if date not in combined.index:
                 combined.loc[date, ohlcv_columns] = row[ohlcv_columns]
                 continue
+            # The provider's daily bar includes trades missing from hourly bars.
+            # Only fill missing values; never replace an existing daily OHLCV.
             for column in ohlcv_columns:
                 value = row[column]
-                if not type(self).is_missing_value(value):
+                if type(self).is_missing_value(combined.loc[date, column]) and not type(self).is_missing_value(value):
                     combined.loc[date, column] = value
         return combined.sort_index()
 
@@ -159,7 +163,8 @@ class MarketDataMixin:
         if data is None or data.empty or "Close" not in data.columns:
             return pd.DataFrame()
         data = self.normalize_index_to_host_timezone(data, preserve_dates=True)
-        return self.add_daily_structural_indicators(data.dropna())
+        data = mark_volume_completion(data.dropna(), "1d", self.host_now())
+        return self.add_daily_structural_indicators(data)
 
     def get_ticker(self):
         ticker = self.ticker_var.get().strip().upper()

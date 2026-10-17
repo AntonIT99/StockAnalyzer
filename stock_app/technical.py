@@ -6,6 +6,26 @@ from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_
 
 class TechnicalAnalysisMixin:
     @staticmethod
+    def completed_volume_data(data: pd.DataFrame) -> pd.DataFrame:
+        if "VOLUME_COMPLETE" in data:
+            return data.loc[data["VOLUME_COMPLETE"].fillna(False).astype(bool)]
+        return data
+
+    @classmethod
+    def volume_confirmation(cls, data: pd.DataFrame) -> bool | None:
+        """Evaluate participation and price on the same completed bar."""
+        completed = cls.completed_volume_data(data)
+        if completed.empty:
+            return None
+        row = completed.iloc[-1]
+        rvol = row.get("DAILY_RVOL20", row.get("RVOL20", row.get("RVOL")))
+        ema20 = row.get("DAILY_EMA20", row.get("EMA20"))
+        price = row.get("Close")
+        if not all(cls.is_valid_number(value) for value in (rvol, ema20, price)):
+            return None
+        return bool(rvol > 1.1 and price > ema20)
+
+    @staticmethod
     def calculate_weighted_category_score(
         earned_points: int | float | None,
         max_points: int | float,
@@ -259,17 +279,22 @@ class TechnicalAnalysisMixin:
             upper_band = middle_band + 2 * band_std
             lower_band = middle_band - 2 * band_std
 
-        current_volume = cls.latest_valid_value(volume)
-        current_volume_sma20 = cls.latest_valid_value(volume_sma20)
-        current_rvol = cls.latest_valid_value(rvol)
+        volume_data = cls.completed_volume_data(data)
+        volume_close = volume_data.get("Close", pd.Series(dtype=float))
+        volume = cls.first_available_series(volume_data, "Volume")
+        volume_sma20 = cls.first_available_series(volume_data, "DAILY_VOLUME_SMA20", "VOLUME_SMA20")
+        rvol = cls.first_available_series(volume_data, "DAILY_RVOL20", "RVOL20", "RVOL")
+        # Read the last row directly: missing volume must not reuse older data.
+        current_volume = volume.iloc[-1] if len(volume) else None
+        current_volume_sma20 = volume_sma20.iloc[-1] if len(volume_sma20) else None
+        current_rvol = rvol.iloc[-1] if len(rvol) else None
         if not cls.is_valid_number(current_rvol) and all(
             cls.is_valid_number(value) for value in (current_volume, current_volume_sma20)
         ) and current_volume_sma20 > 0:
             current_rvol = current_volume / current_volume_sma20
-            rvol = pd.Series(index=data.index, dtype=float)
+            rvol = pd.Series(index=volume_data.index, dtype=float)
             rvol.iloc[-1:] = current_rvol
-
-        close_values = close.dropna()
+        close_values = volume_close.dropna()
         rising_price = len(close_values) >= 2 and close_values.iloc[-1] > close_values.iloc[-2]
         rising_price_low_volume = (
             rising_price
@@ -284,7 +309,6 @@ class TechnicalAnalysisMixin:
         )
         macd_divergence = cls.detect_bearish_divergence(close, histogram)
         bollinger_available = len(pd.concat([close, upper_band, lower_band], axis=1).dropna()) >= 2
-        lookback_available = len(close.dropna()) >= PullbackRiskConfig.LOOKBACK_BARS + 1
         spike_available = (
             {"Open", "High", "Low", "Close"}.issubset(data.columns)
             and len(data) >= PullbackRiskConfig.LOOKBACK_BARS + 1
@@ -314,8 +338,8 @@ class TechnicalAnalysisMixin:
             "macd_bearish_divergence_available": cls.has_bearish_divergence_history(close, histogram),
             "bollinger_breakout_failure": cls.detect_bollinger_breakout_failure(close, upper_band, lower_band),
             "bollinger_breakout_failure_available": bollinger_available,
-            "low_volume_new_high": cls.detect_low_volume_new_high(close, rvol),
-            "low_volume_new_high_available": lookback_available and cls.is_valid_number(current_rvol),
+            "low_volume_new_high": cls.detect_low_volume_new_high(volume_close, rvol),
+            "low_volume_new_high_available": len(volume_close.dropna()) >= PullbackRiskConfig.LOOKBACK_BARS + 1 and cls.is_valid_number(current_rvol),
             "spike_rejection_candle": cls.detect_spike_rejection_candle(data),
             "spike_rejection_candle_available": spike_available,
             "rising_price_low_volume": rising_price_low_volume,
@@ -805,8 +829,13 @@ class TechnicalAnalysisMixin:
     def calculate_volume_indicators(data: pd.DataFrame) -> pd.DataFrame:
         if "Volume" not in data.columns:
             return data
-        data["VOLUME_SMA20"] = data["Volume"].rolling(20).mean()
-        data["RVOL20"] = data["Volume"] / data["VOLUME_SMA20"]
+        completed = data.get("VOLUME_COMPLETE", pd.Series(True, index=data.index)).fillna(False).astype(bool)
+        baseline = data.loc[completed, "Volume"].rolling(20).mean().shift(1)
+        data["VOLUME_SMA20"] = baseline.reindex(data.index)
+        if (~completed).any():
+            prior_mean = data.loc[completed, "Volume"].rolling(20).mean()
+            data.loc[~completed, "VOLUME_SMA20"] = prior_mean.reindex(data.index).ffill().loc[~completed]
+        data["RVOL20"] = data["Volume"] / data["VOLUME_SMA20"].where(data["VOLUME_SMA20"] > 0)
         data["RVOL"] = data["RVOL20"]
         data["VOLUME_EMA20"] = data["Volume"].ewm(span=20, adjust=False).mean()
         data["VOLUME_EMA50"] = data["Volume"].ewm(span=50, adjust=False).mean()
@@ -1300,9 +1329,9 @@ class TechnicalAnalysisMixin:
         rsi14 = cls.latest_valid_value(rsi14_series)
         macd = cls.latest_valid_value(macd_series)
         macd_signal = cls.latest_valid_value(macd_signal_series)
-        volume = cls.latest_valid_value(volume_series)
-        volume_sma20 = cls.latest_valid_value(volume_sma20_series)
-        rvol20 = cls.latest_valid_value(rvol20_series)
+        volume = volume_series.iloc[-1] if len(volume_series) else None
+        volume_sma20 = volume_sma20_series.iloc[-1] if len(volume_sma20_series) else None
+        rvol20 = rvol20_series.iloc[-1] if len(rvol20_series) else None
         atr14 = cls.latest_valid_value(atr14_series)
         atr_pct = cls.latest_valid_value(atr_pct_series)
 
@@ -1378,15 +1407,10 @@ class TechnicalAnalysisMixin:
             ),
             not bearish_divergence if divergence_available else None,
         ]
-        ema20_extension_ok = None
-        if cls.is_valid_number(current_price) and cls.is_valid_number(ema20):
-            ema20_extension_ok = current_price <= ema20 * 1.08
         sma200_extension_ok = None
         if cls.is_valid_number(current_price) and cls.is_valid_number(sma200):
             sma200_extension_ok = current_price <= sma200 * 1.20
         quality_checks = [
-            cls.greater_than(volume, volume_sma20),
-            ema20_extension_ok,
             sma200_extension_ok,
             (
                 abs(pullback_indicators["atr_extension"]) < PullbackRiskConfig.ATR_EXTENDED
@@ -1404,13 +1428,7 @@ class TechnicalAnalysisMixin:
         momentum_score = 0 if momentum_score is None else momentum_score
         quality_score = 0 if quality_score is None else quality_score
         score = trend_score + momentum_score + quality_score
-        rvol_confirmed = None
-        if (
-            cls.is_valid_number(rvol20)
-            and cls.is_valid_number(current_price)
-            and cls.is_valid_number(ema20)
-        ):
-            rvol_confirmed = rvol20 > 1.1 and current_price > ema20
+        rvol_confirmed = cls.volume_confirmation(data)
         atr_pct_healthy = None
         if cls.is_valid_number(atr_pct):
             atr_pct_healthy = ATR_PCT_HEALTHY_MIN <= atr_pct <= ATR_PCT_HEALTHY_MAX
@@ -1426,7 +1444,6 @@ class TechnicalAnalysisMixin:
                 if pullback_indicators["spike_rejection_candle_available"]
                 else None
             ),
-            cls.greater_than(volume, volume_sma20),
             atr_pct_healthy
         ]
         confirmation_score, confirmation_max = cls.score_active_checks(confirmation_checks)
@@ -1642,9 +1659,11 @@ class TechnicalAnalysisMixin:
         rsi14 = structure_score["rsi14"]
         macd = structure_score["macd"]
         macd_signal = structure_score["macd_signal"]
-        volume = structure_score["volume"]
-        volume_sma20 = structure_score["volume_sma20"]
-        rvol20 = structure_score["rvol20"]
+        volume_data = cls.completed_volume_data(data)
+        volume_row = volume_data.iloc[-1] if not volume_data.empty else pd.Series(dtype=float)
+        volume = volume_row.get("Volume")
+        volume_sma20 = volume_row.get("DAILY_VOLUME_SMA20", volume_row.get("VOLUME_SMA20"))
+        rvol20 = volume_row.get("DAILY_RVOL20", volume_row.get("RVOL20", volume_row.get("RVOL")))
         atr_pct = structure_score["atr_pct"]
         high_52w, low_52w = cls.calculate_52w_levels(data)
         total_score = structure_score["score"]
@@ -1827,6 +1846,10 @@ class TechnicalAnalysisMixin:
             "daily_macd_vs_signal": "N/A" if macd_above_signal is None else "Above Signal" if macd_above_signal else "Below Signal",
             "daily_macd_zero": "N/A" if macd_above_zero is None else "Above 0" if macd_above_zero else "Below 0",
             "daily_rvol20": rvol20,
+            "volume_confirmation": cls.volume_confirmation(data),
+            "volume_scored_as_of": str(volume_data.index[-1]) if not volume_data.empty else None,
+            "volume_provisional": bool("VOLUME_COMPLETE" in data and not data["VOLUME_COMPLETE"].iloc[-1]),
+            "live_rvol20": structure_score["rvol20"],
             "daily_atr_pct": atr_pct,
             "daily_atr_pct_state": atr_state(atr_pct),
             "distance_volume_sma20": cls.percentage_distance(volume, volume_sma20),
@@ -2091,8 +2114,9 @@ class TechnicalAnalysisMixin:
         data["DAILY_MACD_SIGNAL"] = data["DAILY_MACD"].ewm(span=9, adjust=False).mean()
         data["DAILY_MACD_HISTOGRAM"] = data["DAILY_MACD"] - data["DAILY_MACD_SIGNAL"]
         if "Volume" in data.columns:
-            data["DAILY_VOLUME_SMA20"] = data["Volume"].rolling(20).mean()
-            data["DAILY_RVOL20"] = data["Volume"] / data["DAILY_VOLUME_SMA20"]
+            data = TechnicalAnalysisMixin.calculate_volume_indicators(data)
+            data["DAILY_VOLUME_SMA20"] = data["VOLUME_SMA20"]
+            data["DAILY_RVOL20"] = data["RVOL20"]
         if {"High", "Low", "Close"}.issubset(data.columns):
             high_low = data["High"] - data["Low"]
             high_close = (data["High"] - data["Close"].shift()).abs()

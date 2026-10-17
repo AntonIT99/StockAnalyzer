@@ -14,15 +14,15 @@ class WeightedTechnicalScoreTests(unittest.TestCase):
         self.assertAlmostEqual(sum(TECHNICAL_SCORE_WEIGHTS.values()), 1.0)
 
     def test_default_category_maximums_reflect_scored_criteria(self):
-        result = TechnicalAnalysisMixin.calculate_weighted_technical_score(15, 6, 5, 5)
+        result = TechnicalAnalysisMixin.calculate_weighted_technical_score(15, 6, 3, 4)
 
         self.assertEqual(MOMENTUM_SCORE_MAX, 6)
-        self.assertEqual(SETUP_QUALITY_SCORE_MAX, 5)
-        self.assertEqual(CONFIRMATION_SCORE_MAX, 5)
+        self.assertEqual(SETUP_QUALITY_SCORE_MAX, 3)
+        self.assertEqual(CONFIRMATION_SCORE_MAX, 4)
         self.assertEqual(result["score"], 100.0)
         self.assertEqual(result["categories"]["momentum"]["max_points"], 6)
-        self.assertEqual(result["categories"]["setup"]["max_points"], 5)
-        self.assertEqual(result["categories"]["confirmation"]["max_points"], 5)
+        self.assertEqual(result["categories"]["setup"]["max_points"], 3)
+        self.assertEqual(result["categories"]["confirmation"]["max_points"], 4)
 
     def test_normalizes_different_category_maximums_and_contributions(self):
         result = TechnicalAnalysisMixin.calculate_weighted_technical_score(

@@ -367,6 +367,28 @@ Interpretation:
 
 Volatility is low. A larger move may be coming, but the squeeze does not predict direction by itself.
 
+## Scoring and volume participation
+
+The technical score weights Trend Structure at 40%, Momentum at 25%, Setup
+Quality at 15%, and Confirmation at 20%. Setup Quality has three checks:
+SMA200 extension at most 20%, absolute EMA20 extension below 2 ATR, and no
+Bollinger breakout failure. EMA20 percentage distance is displayed as context.
+Confirmation has four checks: volume confirmation, no low-volume new high,
+no rejection candle, and ATR percentage within its healthy range.
+
+Volume confirmation earns one point when RVOL20 exceeds 1.1 and price is above
+EMA20 on the same completed bar. RVOL20 compares volume with the preceding 20
+completed bars, excluding the evaluated bar. Below-average volume is labelled
+"Limited participation" rather than treated as a directional bearish signal.
+A new high on unusually low volume remains a separate contextual warning.
+
+Live volume is shown as provisional; volume scoring and volume-based pullback
+warnings use the latest completed bar. Without exchange calendars, daily bars
+are conservatively finalized the next calendar day, weekly bars the next Monday,
+and monthly/quarterly bars at the next calendar boundary. Intraday bars finalize
+after their nominal duration. The daily fallback only fills missing data and
+preserves existing provider daily OHLCV values.
+
 ## Common Signal Combinations
 
 ### Strong Bullish Setup

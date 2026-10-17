@@ -66,11 +66,9 @@ class SignalSummaryChartMixin:
         def rvol_color(value: float | None) -> str:
             if value is None or pd.isna(value):
                 return "#64748b"
-            if value >= 2:
-                return "#f97316"
-            if value >= 1:
+            if value > 1.1:
                 return "#16a34a"
-            return "#dc2626"
+            return "#64748b"
 
         def format_signed_percent(value: float | None) -> str:
             return self.format_summary_percent(value)
@@ -118,7 +116,7 @@ class SignalSummaryChartMixin:
             verdict_text = trend_label
         extended_score_text = "N/A" if weighted_score is None else f"{int(weighted_score + 0.5)}/100"
         rvol20 = summary.get("daily_rvol20")
-        rvol20_text = "N/A" if rvol20 is None or pd.isna(rvol20) else f"{rvol20:.2f}x"
+        rvol20_text = "N/A" if rvol20 is None or pd.isna(rvol20) else f"{rvol20:.2f}× average"
         trend_phase = summary.get("trend_phase", "N/A")
         trend_direction = summary.get("trend_direction", "Stable")
         verdict_colors = {
@@ -283,10 +281,14 @@ class SignalSummaryChartMixin:
             rsi_above_50 = summary.get("daily_rsi14") > 50
         macd_above_signal = status_pass("daily_macd_vs_signal", "Above Signal")
         macd_above_zero = status_pass("daily_macd_zero", "Above 0")
-        volume_above_sma20 = status_pass("volume_vs_sma20")
-        rvol_confirmed = None
-        if type(self).is_valid_number(rvol20) and price_above_ema20 is not None:
-            rvol_confirmed = rvol20 > 1.1 and price_above_ema20
+        rvol_confirmed = summary.get("volume_confirmation")
+        volume_status = "N/A" if rvol_confirmed is None else "Confirmed" if rvol_confirmed else "Limited participation"
+        volume_status_color = "#16a34a" if rvol_confirmed else "#64748b"
+        live_rvol = summary.get("live_rvol20")
+        volume_context_label = "Live RVOL (provisional)" if summary.get("volume_provisional") else "Volume bar"
+        volume_context = (
+            f"{live_rvol:.2f}× average" if type(self).is_valid_number(live_rvol) else "N/A"
+        ) if summary.get("volume_provisional") else str(summary.get("volume_scored_as_of") or "N/A")[:16]
         short_term_score_value = summary.get("short_term_trend_score")
         medium_term_score_value = summary.get("medium_term_trend_score")
         long_term_score_value = summary.get("long_term_trend_score")
@@ -581,8 +583,7 @@ class SignalSummaryChartMixin:
             (
                 score_header("Setup Quality", "daily_trend_score_quality", setup_max),
                 [
-                    metric_row("Volume vs SMA20", format_signed_percent(summary.get("distance_volume_sma20")), distance_color(summary.get("distance_volume_sma20")), True),
-                    metric_row("EMA20 Ext <=8%", format_extension("daily_ema20_extension_state", "daily_ema20_extension"), status_color(summary.get("daily_ema20_extension_state", "N/A"))),
+                    metric_row("EMA20 Distance (context)", format_signed_percent(summary.get("daily_ema20_extension")), "#64748b"),
                     metric_row("SMA200 Ext <=20%", format_extension("daily_sma200_extension_state", "daily_sma200_extension"), status_color(summary.get("daily_sma200_extension_state", "N/A"))),
                     metric_row("ATR Extension", format_atr_extension(), atr_extension_color()),
                     metric_row("Bollinger Failure", *risk_status(summary.get("bollinger_breakout_failure")))
@@ -591,11 +592,11 @@ class SignalSummaryChartMixin:
             (
                 score_header("Confirmation", "confirmation_score", confirmation_max, confirmation=True),
                 [
-                    metric_row("RVOL Confirmation", status_symbol(rvol_confirmed), score_color(rvol_confirmed), True),
-                    metric_row("RVOL20", rvol20_text, rvol_color(rvol20)),
+                    metric_row("Volume Confirmation", volume_status, volume_status_color, True),
+                    metric_row("RVOL20 (completed)", rvol20_text, rvol_color(rvol20)),
                     metric_row("Low-Volume New High", *risk_status(summary.get("low_volume_new_high"))),
                     metric_row("Rejection Candle", *risk_status(summary.get("spike_rejection_candle"))),
-                    metric_row("Volume vs SMA20", format_signed_percent(summary.get("distance_volume_sma20")), distance_color(summary.get("distance_volume_sma20")), True),
+                    metric_row(volume_context_label, volume_context, "#64748b"),
                     metric_row("ATR% Range", f"{status_symbol(status_pass('daily_atr_pct_state', 'Healthy'))} {summary.get('daily_atr_pct_state', 'N/A')}", status_color(summary.get("daily_atr_pct_state", "N/A")))
                 ]
             )
