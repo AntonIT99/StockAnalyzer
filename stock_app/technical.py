@@ -1718,6 +1718,7 @@ class TechnicalAnalysisMixin:
             ("EMA100", ema100)
         ])
         slow_indicator_values = [
+            ("EMA100", ema100),
             ("EMA200", ema200),
             ("SMA200", sma200)
         ]
