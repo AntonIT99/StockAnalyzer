@@ -1882,11 +1882,22 @@ class TechnicalAnalysisMixin:
         if fundamentals is None and isinstance(daily_data, dict):
             fundamentals = daily_data
             daily_data = None
+        # `data` holds the interval's full history, including indicator warm-up.
+        # Scores use all of it up to `daily_summary_as_of`, so they depend on
+        # the interval but not on how much of it is visible. Only the period
+        # price figures are limited to the visible window.
+        if daily_summary_as_of is not None and not data.empty:
+            as_of = cls.align_timestamp_to_index(daily_summary_as_of, data.index)
+            data = data.loc[data.index < as_of]
+        period_data = data
+        if period_start_as_of is not None and not data.empty:
+            period_start = cls.align_timestamp_to_index(pd.Timestamp(period_start_as_of), data.index)
+            period_data = data.loc[data.index >= period_start]
         current_price = cls.latest_valid_value(data["Close"])
         current_rvol = cls.latest_valid_value(data.get("RVOL", pd.Series(dtype=float)))
         current_atr = cls.latest_valid_value(data.get("ATR14", pd.Series(dtype=float)))
         volume_trend = cls.calculate_volume_trend(data)
-        period_price_summary = cls.calculate_period_price_summary(data)
+        period_price_summary = cls.calculate_period_price_summary(period_data)
         interval_summary = cls.calculate_daily_structural_summary(
             data,
             as_of=daily_summary_as_of,

@@ -9,6 +9,9 @@ class ChartUpdateMixin:
             ticker = self.get_ticker()
             data, visible_start, visible_end = self.download_data()
             data = self.add_indicators(data)
+            # The interval sets the score's horizon, so scoring keeps the full
+            # warm-up history; only the plotted frame is cut to the period.
+            scoring_data = data
             if visible_start is not None:
                 visible_start = self.align_timestamp_to_index(visible_start, data.index)
                 data = data.loc[data.index >= visible_start]
@@ -51,7 +54,7 @@ class ChartUpdateMixin:
             self.print_fundamentals_debug(fundamental_metrics)
         daily_signal_data = self.download_daily_signal_data(ticker, as_of=visible_end)
         signal_summary = self.calculate_signal_summary(
-            data,
+            scoring_data,
             daily_signal_data,
             fundamental_metrics,
             daily_summary_as_of=visible_end,

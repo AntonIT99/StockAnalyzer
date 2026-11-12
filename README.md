@@ -147,6 +147,12 @@ For intraday intervals, the app also requests warmup data before the visible per
 
 After indicators are calculated, the chart is trimmed back to the selected period.
 
+The interval sets the horizon of the scores. Technical score and pullback risk are
+calculated on the full downloaded history of the selected interval, so the same
+ticker and interval give the same scores for every visible period. The period only
+limits the chart, the period price figures, and the baseline of the
+"since period start" score comparison.
+
 ## Core Moving Averages
 
 ### EMA 20
