@@ -2,7 +2,7 @@
 
 from typing import Any
 import pandas as pd
-from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, MOMENTUM_SCORE_MAX, PullbackRiskConfig, SETUP_QUALITY_SCORE_MAX, TECHNICAL_ASSESSMENT_WEAK_PERCENTAGES, TECHNICAL_SCORE_WEIGHTS, TREND_STRUCTURE_SCORE_MAX
+from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, MOMENTUM_SCORE_MAX, PullbackRiskConfig, SETUP_QUALITY_SCORE_MAX, TECHNICAL_ASSESSMENT_WEAK_PERCENTAGES, TECHNICAL_SCORE_WEIGHTS, TREND_LAYER_SCORE_MAX, TREND_STRUCTURE_SCORE_MAX
 from .theme import themed
 
 class TechnicalAnalysisMixin:
@@ -56,15 +56,31 @@ class TechnicalAnalysisMixin:
             "setup": (setup_score, setup_max),
             "confirmation": (confirmation_score, confirmation_max),
         }
-        categories = {
-            name: {
+        # A category without any evaluable check carries no information. Its
+        # weight is spread over the others instead of counting as 0 %, so
+        # missing history does not read as a bearish signal.
+        active = {
+            name: earned is not None and maximum > 0
+            for name, (earned, maximum) in inputs.items()
+        }
+        active_weight = sum(TECHNICAL_SCORE_WEIGHTS[name] for name, is_active in active.items() if is_active)
+        if all(active.values()):
+            active_weight = 1.0
+        categories = {}
+        for name, (earned, maximum) in inputs.items():
+            effective_weight = (
+                TECHNICAL_SCORE_WEIGHTS[name] / active_weight
+                if active[name] and active_weight > 0
+                else 0.0
+            )
+            categories[name] = {
                 "earned_points": earned,
                 "max_points": maximum,
                 "weight": TECHNICAL_SCORE_WEIGHTS[name],
-                **cls.calculate_weighted_category_score(earned, maximum, TECHNICAL_SCORE_WEIGHTS[name]),
+                "active": active[name],
+                "effective_weight": effective_weight,
+                **cls.calculate_weighted_category_score(earned, maximum, effective_weight),
             }
-            for name, (earned, maximum) in inputs.items()
-        }
         return {
             "score": sum(category["contribution"] for category in categories.values()),
             "categories": categories,
@@ -569,7 +585,12 @@ class TechnicalAnalysisMixin:
             name: details.get("percentage")
             for name, details in weighted_categories.items()
         }
-        if any(not cls.is_valid_number(percentages.get(name)) for name in ("trend", "momentum", "setup", "confirmation")):
+        scored = [
+            name
+            for name in ("trend", "momentum", "setup", "confirmation")
+            if name in weighted_categories and weighted_categories[name].get("active", True)
+        ]
+        if not scored or any(not cls.is_valid_number(percentages.get(name)) for name in scored):
             return base_label
 
         weak_labels = {
@@ -580,7 +601,7 @@ class TechnicalAnalysisMixin:
         }
         weak_categories = [
             name
-            for name in ("trend", "momentum", "setup", "confirmation")
+            for name in scored
             if percentages[name] < TECHNICAL_ASSESSMENT_WEAK_PERCENTAGES[name]
         ]
         friendly_contexts = {
@@ -618,7 +639,8 @@ class TechnicalAnalysisMixin:
             assessment = f"{context or 'Bullish'} — {weakness} Weak"
             return with_risk(assessment)
 
-        category_spread = max(percentages.values()) - min(percentages.values())
+        scored_percentages = [percentages[name] for name in scored]
+        category_spread = max(scored_percentages) - min(scored_percentages)
         if context:
             if weak_categories and category_spread >= 40:
                 weakest = sorted(weak_categories, key=lambda name: percentages[name])[:2]
@@ -627,7 +649,13 @@ class TechnicalAnalysisMixin:
             return with_risk(context)
         if 45 <= technical_score < 65 and category_spread >= 40:
             return "Neutral / Mixed — Categories Diverge"
-        if technical_score < 45 and percentages["momentum"] >= 65 and percentages["trend"] < 45:
+        if (
+            technical_score < 45
+            and "momentum" in scored
+            and "trend" in scored
+            and percentages["momentum"] >= 65
+            and percentages["trend"] < 45
+        ):
             return "Bearish Trend — Momentum Improving"
         return base_label
 
@@ -1086,11 +1114,12 @@ class TechnicalAnalysisMixin:
         long_term_score: int | None = None,
         momentum_score: int | None = None,
         trend_phase: str = "N/A",
-        trend_direction: str | None = None
+        trend_direction: str | None = None,
+        max_score: int | None = None
     ) -> str:
         return cls.classify_score_percentage(
             score,
-            BULLISH_STRUCTURE_SCORE_MAX,
+            BULLISH_STRUCTURE_SCORE_MAX if max_score is None else max_score,
             trend_score=trend_score,
             short_term_score=short_term_score,
             medium_term_score=medium_term_score,
@@ -1209,11 +1238,12 @@ class TechnicalAnalysisMixin:
         momentum_score: int | None = None,
         confirmation_score: int | None = None,
         trend_phase: str = "N/A",
-        trend_direction: str | None = None
+        trend_direction: str | None = None,
+        max_score: int | None = None
     ) -> str:
         return cls.classify_score_percentage(
             score,
-            EXTENDED_BULLISH_SCORE_MAX,
+            EXTENDED_BULLISH_SCORE_MAX if max_score is None else max_score,
             trend_score=trend_score,
             short_term_score=short_term_score,
             medium_term_score=medium_term_score,
@@ -1231,6 +1261,8 @@ class TechnicalAnalysisMixin:
         trend_text = str(trend).lower()
         trend_bullish = "bullish" in trend_text
         trend_bearish = "bearish" in trend_text or "weak" in trend_text
+        if business in {"unknown", "none", ""}:
+            return "N/A"
         if business == "strong" and value == "cheap" and trend_bearish:
             return "Watchlist"
         if business == "strong" and value == "cheap" and trend_bullish:
@@ -1246,6 +1278,7 @@ class TechnicalAnalysisMixin:
             "max_score": BULLISH_STRUCTURE_SCORE_MAX,
             "rating": "N/A",
             "trend_score": None,
+            "trend_max": TREND_STRUCTURE_SCORE_MAX,
             "short_term_trend_score": None,
             "short_term_trend_label": "N/A",
             "medium_term_trend_score": None,
@@ -1357,9 +1390,9 @@ class TechnicalAnalysisMixin:
             cls.greater_than(sma50, sma200),
             cls.greater_than(sma200, sma200_previous)
         ]
-        short_term_score = cls.score_optional_checks(short_term_checks, 5, min_valid=3)
-        medium_term_score = cls.score_optional_checks(medium_term_checks, 5, min_valid=3)
-        long_term_score = cls.score_optional_checks(long_term_checks, 5, min_valid=3)
+        short_term_score = cls.score_optional_checks(short_term_checks, TREND_LAYER_SCORE_MAX, min_valid=3)
+        medium_term_score = cls.score_optional_checks(medium_term_checks, TREND_LAYER_SCORE_MAX, min_valid=3)
+        long_term_score = cls.score_optional_checks(long_term_checks, TREND_LAYER_SCORE_MAX, min_valid=3)
         trend_score = cls.calculate_trend_structure_score(
             short_term_score,
             medium_term_score,
@@ -1378,6 +1411,12 @@ class TechnicalAnalysisMixin:
                 "sma50": sma50,
                 "sma200": sma200
             }
+        # A layer without enough history (for example no SMA200 yet) is left
+        # out of the maximum instead of being scored as 0 of 5.
+        trend_max = TREND_LAYER_SCORE_MAX * sum(
+            layer_score is not None
+            for layer_score in (short_term_score, medium_term_score, long_term_score)
+        )
         trend_phase = cls.classify_trend_phase(
             short_term_score,
             medium_term_score,
@@ -1429,6 +1468,7 @@ class TechnicalAnalysisMixin:
         momentum_score = 0 if momentum_score is None else momentum_score
         quality_score = 0 if quality_score is None else quality_score
         score = trend_score + momentum_score + quality_score
+        structure_max = trend_max + momentum_max + quality_max
         rvol_confirmed = cls.volume_confirmation(data)
         atr_pct_healthy = None
         if cls.is_valid_number(atr_pct):
@@ -1453,6 +1493,7 @@ class TechnicalAnalysisMixin:
             momentum_score,
             quality_score,
             confirmation_score,
+            trend_max=trend_max,
             momentum_max=momentum_max,
             setup_max=quality_max,
             confirmation_max=confirmation_max,
@@ -1469,14 +1510,15 @@ class TechnicalAnalysisMixin:
                 long_term_score=long_term_score,
                 momentum_score=momentum_score,
                 confirmation_score=confirmation_score,
-                trend_phase=trend_phase
+                trend_phase=trend_phase,
+                max_score=structure_max + confirmation_max
             )
         else:
             extended_total_score = None
             extended_rating = "N/A"
         return {
             "score": score,
-            "max_score": BULLISH_STRUCTURE_SCORE_MAX,
+            "max_score": structure_max,
             "rating": cls.classify_bullish_structure_score(
                 score,
                 trend_score=trend_score,
@@ -1484,9 +1526,11 @@ class TechnicalAnalysisMixin:
                 medium_term_score=medium_term_score,
                 long_term_score=long_term_score,
                 momentum_score=momentum_score,
-                trend_phase=trend_phase
+                trend_phase=trend_phase,
+                max_score=structure_max
             ),
             "trend_score": trend_score,
+            "trend_max": trend_max,
             "short_term_trend_score": short_term_score,
             "short_term_trend_label": cls.classify_trend_layer_score(short_term_score),
             "medium_term_trend_score": medium_term_score,
@@ -1501,7 +1545,7 @@ class TechnicalAnalysisMixin:
             "quality_max": quality_max,
             "confirmation_max": confirmation_max,
             "extended_total_score": extended_total_score,
-            "extended_max_score": EXTENDED_BULLISH_SCORE_MAX,
+            "extended_max_score": structure_max + confirmation_max,
             "extended_rating": extended_rating,
             "weighted_technical_score": weighted_technical_score,
             "weighted_technical_rating": weighted_technical_rating,
@@ -1774,7 +1818,7 @@ class TechnicalAnalysisMixin:
             "daily_trend_score": total_score,
             "daily_trend_score_max": structure_score["max_score"],
             "daily_trend_score_trend": structure_score["trend_score"],
-            "daily_trend_score_trend_max": TREND_STRUCTURE_SCORE_MAX,
+            "daily_trend_score_trend_max": structure_score["trend_max"],
             "short_term_trend_score": structure_score["short_term_trend_score"],
             "short_term_trend_label": structure_score["short_term_trend_label"],
             "medium_term_trend_score": structure_score["medium_term_trend_score"],
@@ -2108,70 +2152,64 @@ class TechnicalAnalysisMixin:
         return rows
 
     @staticmethod
-    def add_daily_structural_indicators(data: pd.DataFrame) -> pd.DataFrame:
+    def calculate_rsi(close: pd.Series, window: int = 14) -> pd.Series:
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window).mean()
+        avg_loss = loss.rolling(window).mean()
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+
+    @staticmethod
+    def calculate_macd(close: pd.Series) -> tuple[pd.Series, pd.Series]:
+        """Return the MACD line (EMA12 - EMA26) and its EMA9 signal line."""
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        return macd, macd.ewm(span=9, adjust=False).mean()
+
+    @staticmethod
+    def calculate_atr(data: pd.DataFrame, window: int = 14) -> pd.Series:
+        high_low = data["High"] - data["Low"]
+        high_close = (data["High"] - data["Close"].shift()).abs()
+        low_close = (data["Low"] - data["Close"].shift()).abs()
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        return true_range.rolling(window).mean()
+
+    @classmethod
+    def add_daily_structural_indicators(cls, data: pd.DataFrame) -> pd.DataFrame:
         data = data.copy()
         for span in (9, 12, 20, 50, 100, 200):
             data[f"DAILY_EMA{span}"] = data["Close"].ewm(span=span, adjust=False).mean()
         for window in (20, 50, 100, 200):
             data[f"DAILY_SMA{window}"] = data["Close"].rolling(window).mean()
-        delta = data["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / avg_loss
-        data["DAILY_RSI14"] = 100 - (100 / (1 + rs))
-        ema12 = data["Close"].ewm(span=12, adjust=False).mean()
-        ema26 = data["Close"].ewm(span=26, adjust=False).mean()
-        data["DAILY_MACD"] = ema12 - ema26
-        data["DAILY_MACD_SIGNAL"] = data["DAILY_MACD"].ewm(span=9, adjust=False).mean()
+        data["DAILY_RSI14"] = cls.calculate_rsi(data["Close"])
+        data["DAILY_MACD"], data["DAILY_MACD_SIGNAL"] = cls.calculate_macd(data["Close"])
         data["DAILY_MACD_HISTOGRAM"] = data["DAILY_MACD"] - data["DAILY_MACD_SIGNAL"]
         if "Volume" in data.columns:
-            data = TechnicalAnalysisMixin.calculate_volume_indicators(data)
+            data = cls.calculate_volume_indicators(data)
             data["DAILY_VOLUME_SMA20"] = data["VOLUME_SMA20"]
             data["DAILY_RVOL20"] = data["RVOL20"]
         if {"High", "Low", "Close"}.issubset(data.columns):
-            high_low = data["High"] - data["Low"]
-            high_close = (data["High"] - data["Close"].shift()).abs()
-            low_close = (data["Low"] - data["Close"].shift()).abs()
-            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            data["DAILY_ATR14"] = true_range.rolling(14).mean()
+            data["DAILY_ATR14"] = cls.calculate_atr(data)
             data["DAILY_ATR_PCT"] = data["DAILY_ATR14"] / data["Close"]
         return data
 
     @classmethod
     def add_indicators(cls, data):
-        data["EMA9"] = data["Close"].ewm(span=9, adjust=False).mean()
-        data["EMA12"] = data["Close"].ewm(span=12, adjust=False).mean()
-        data["EMA20"] = data["Close"].ewm(span=20, adjust=False).mean()
-        data["EMA50"] = data["Close"].ewm(span=50, adjust=False).mean()
-        data["EMA100"] = data["Close"].ewm(span=100, adjust=False).mean()
-        data["EMA200"] = data["Close"].ewm(span=200, adjust=False).mean()
-        data["SMA20"] = data["Close"].rolling(20).mean()
-        data["SMA50"] = data["Close"].rolling(50).mean()
-        data["SMA100"] = data["Close"].rolling(100).mean()
-        data["SMA200"] = data["Close"].rolling(200).mean()
+        for span in (9, 12, 20, 50, 100, 200):
+            data[f"EMA{span}"] = data["Close"].ewm(span=span, adjust=False).mean()
+        for window in (20, 50, 100, 200):
+            data[f"SMA{window}"] = data["Close"].rolling(window).mean()
         data = cls.calculate_volume_indicators(data)
         mid = data["Close"].rolling(20).mean()
         std = data["Close"].rolling(20).std()
         data["BB_UPPER"] = mid + 2 * std
         data["BB_LOWER"] = mid - 2 * std
-        delta = data["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / avg_loss
-        data["RSI"] = 100 - (100 / (1 + rs))
-        high_low = data["High"] - data["Low"]
-        high_close = (data["High"] - data["Close"].shift()).abs()
-        low_close = (data["Low"] - data["Close"].shift()).abs()
-        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        data["ATR14"] = true_range.rolling(14).mean()
+        data["RSI"] = cls.calculate_rsi(data["Close"])
+        data["ATR14"] = cls.calculate_atr(data)
         data["ATR_PCT"] = data["ATR14"] / data["Close"]
-        ema12 = data["Close"].ewm(span=12, adjust=False).mean()
-        ema26 = data["Close"].ewm(span=26, adjust=False).mean()
-        data["MACD"] = ema12 - ema26
-        data["MACD_SIGNAL"] = data["MACD"].ewm(span=9, adjust=False).mean()
+        data["MACD"], data["MACD_SIGNAL"] = cls.calculate_macd(data["Close"])
         data["MACD_HISTOGRAM"] = data["MACD"] - data["MACD_SIGNAL"]
         return data

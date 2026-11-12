@@ -125,10 +125,12 @@ class RiskDashboardMixin:
             )
             add_text(left, y, category_label, fontsize=8.5, fontweight="bold", color=themed("#111827"))
             category_score = f"{awarded}/{maximum}"
-            if raw > maximum:
-                category_score += f" (raw {raw}, capped)"
             add_text(right, y, category_score, ha="right", fontsize=7.8, fontweight="bold", color=risk_color if awarded else themed("#64748b"))
             y -= 0.022
+            if raw > maximum:
+                # On its own line: next to the score it ran into the category title.
+                add_text(left + 0.008, y, f"Raw {raw} points, capped at {maximum}", fontsize=5.8, color=themed("#64748b"))
+                y -= 0.015
 
             for metric in details.get(category_key, []):
                 if y < card_bottom + 0.025:

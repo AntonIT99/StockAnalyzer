@@ -107,7 +107,14 @@ class SignalSummaryChartMixin:
         trend_label = summary.get("daily_trend", type(self).classify_trend_score(trend_score))
         confirmation_score = summary.get("confirmation_score")
         confirmation_max = summary.get("confirmation_max", CONFIRMATION_SCORE_MAX)
+        trend_max = summary.get("daily_trend_score_trend_max") or TREND_STRUCTURE_SCORE_MAX
         momentum_max = summary.get("daily_trend_score_momentum_max", MOMENTUM_SCORE_MAX)
+        weighted_categories = summary.get("weighted_contributions") or {}
+
+        def weight_text(name: str) -> str:
+            # Categories that could not be scored hand their weight to the others.
+            weight = weighted_categories.get(name, {}).get("effective_weight", TECHNICAL_SCORE_WEIGHTS[name])
+            return f"{weight:.0%}"
         setup_max = summary.get("daily_trend_score_quality_max", SETUP_QUALITY_SCORE_MAX)
         extended_total_score = summary.get("extended_total_score")
         extended_max_score = summary.get("extended_max_score", EXTENDED_BULLISH_SCORE_MAX)
@@ -167,13 +174,16 @@ class SignalSummaryChartMixin:
             normalized_title = title.lower()
             ratio = value / max_score if max_score else 0
             if normalized_title in {"trend", "trend structure"}:
-                if value >= 13:
+                # Thresholds are defined on the full 15-point scale; rescale
+                # when a trend layer could not be evaluated.
+                scaled = value * TREND_STRUCTURE_SCORE_MAX / max_score if max_score else 0
+                if scaled >= 13:
                     return "Strongly Bullish"
-                if value >= 9:
+                if scaled >= 9:
                     return "Bullish"
-                if value >= 6:
+                if scaled >= 6:
                     return "Neutral / Mixed"
-                if value >= 4:
+                if scaled >= 4:
                     return "Slightly Bearish"
                 return "Bearish"
             if normalized_title == "momentum":
@@ -549,7 +559,7 @@ class SignalSummaryChartMixin:
                 ]
             ),
             (
-                score_header("Trend Structure", "daily_trend_score_trend", TREND_STRUCTURE_SCORE_MAX),
+                score_header("Trend Structure", "daily_trend_score_trend", trend_max),
                 [
                     subgroup_header(layer_title("Fast", "fast_trend_horizon"), trend_layer_score_text("short_term_trend_score", "short_term_trend_label"), trend_layer_color("short_term_trend_label"), trend_layer_header_height),
                     metric_row(hierarchy_text(summary.get("fast_trend_hierarchy", "Not enough data")), "", trend_layer_hierarchy_color("short_term_trend_label"), False, 1, trend_detail_height, trend_layer_hierarchy_color("short_term_trend_label")),
@@ -679,16 +689,16 @@ class SignalSummaryChartMixin:
             {
                 "type": "weighted_summary",
                 "label": (
-                    f"{TECHNICAL_SCORE_WEIGHTS['trend']:.0%} Trend Structure,  "
-                    f"{TECHNICAL_SCORE_WEIGHTS['momentum']:.0%} Momentum"
+                    f"{weight_text('trend')} Trend Structure,  "
+                    f"{weight_text('momentum')} Momentum"
                 ),
                 "height": 1.12,
             },
             {
                 "type": "weighted_summary",
                 "label": (
-                    f"{TECHNICAL_SCORE_WEIGHTS['setup']:.0%} Setup Quality,  "
-                    f"{TECHNICAL_SCORE_WEIGHTS['confirmation']:.0%} Confirmation"
+                    f"{weight_text('setup')} Setup Quality,  "
+                    f"{weight_text('confirmation')} Confirmation"
                 ),
                 "height": 1.12,
             },

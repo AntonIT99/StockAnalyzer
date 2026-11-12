@@ -22,13 +22,31 @@ Enter a ticker symbol in the `Ticker` field, choose the period and interval, sel
 
 Use the `Style` selector to switch the price panel between a close-price line, candlesticks, and a combined line plus candlestick view.
 
+`Update` loads market data for the selected ticker, period and interval. The indicator checkboxes, `Style`, `View` and `Dark Mode` only change how the loaded data is drawn, so they redraw the chart immediately without downloading prices again. A changed ticker, period or interval takes effect on the next `Update`.
+
+## Views
+
+The `View` selector chooses the panel next to the chart:
+
+* `Signal Summary` - technical score, key reasons, score changes and the checks behind each category.
+* `Extended Summary` - pullback risk with every scored rule, plus diagnostics and market context.
+* `Fundamentals` - valuation, growth, cash flow, quality and balance sheet metrics. Opening this view loads the fundamentals.
+
+Valuation, Business and Investment View in the Extended Summary use fundamentals that are already loaded for the ticker. Until the Fundamentals view has been opened they show `Unknown` and `N/A`.
+
+## Dark Mode
+
+Tick `Dark Mode` in the top row to switch the controls, the chart and the summary panels to a dark theme. The choice is saved with the other settings and restored on the next start.
+
 Available periods:
 
 ```text
+Auto-Select
 1h
 2h
 4h
 1d
+2d
 1wk
 2wk
 1mo
@@ -54,7 +72,6 @@ Available intervals:
 30m
 1h
 1d
-5d
 1wk
 1mo
 3mo
@@ -63,6 +80,8 @@ Available intervals:
 ```
 
 The `6mo` and `1y` intervals are calculated by downloading daily data and resampling it into larger bars.
+
+`Auto-Select` picks a period that suits the selected interval, for example `1y` for `1d` bars and `4y` for `1wk` bars.
 
 Choose `Custom` to enter explicit start and end dates. The interval dropdown then uses the rules for the smallest standard period that covers the custom range.
 
@@ -90,9 +109,11 @@ Cache entries expire based on interval:
 1wk and larger: 1 day
 ```
 
+Cache files older than one day can never be served again and are deleted when the app starts.
+
 ## Saved Settings
 
-The last used ticker, period, interval, and indicator selections are saved in `.stock_settings.json` and restored when the app starts again.
+The last used ticker, period, interval, view, style, theme, and indicator selections are saved in `.stock_settings.json` and restored when the app starts again.
 
 Passing `--ticker` on startup overrides the saved ticker for that launch.
 
@@ -381,6 +402,13 @@ SMA200 extension at most 20%, absolute EMA20 extension below 2 ATR, and no
 Bollinger breakout failure. EMA20 percentage distance is displayed as context.
 Confirmation has four checks: volume confirmation, no low-volume new high,
 no rejection candle, and ATR percentage within its healthy range.
+
+Checks that cannot be evaluated are left out instead of counting as failed.
+A trend layer without enough history (for example the slow layer before 200
+bars exist) is removed from the trend maximum, so Trend Structure is then
+scored out of 10 or 5 instead of 15. A category with no evaluable check at
+all passes its weight to the other categories; the weights shown in the
+Signal Summary are the ones actually applied.
 
 Volume confirmation earns one point when RVOL20 exceeds 1.1 and price is above
 EMA20 on the same completed bar. RVOL20 compares volume with the preceding 20
