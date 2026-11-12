@@ -2,6 +2,7 @@
 
 from typing import Any
 from matplotlib.patches import FancyBboxPatch
+from .theme import themed
 
 class FundamentalDashboardMixin:
     def draw_fundamental_dashboard(self, ax: Any, metrics: dict[str, dict[str, Any]], card_bottom: float = 0.03, card_height: float = 0.58) -> None:
@@ -16,8 +17,8 @@ class FundamentalDashboardMixin:
             card_height,
             boxstyle="round,pad=0.012",
             transform=ax.transAxes,
-            facecolor="white",
-            edgecolor="#d1d5db",
+            facecolor=themed("white"),
+            edgecolor=themed("#d1d5db"),
             linewidth=0.9,
             alpha=0.94,
             zorder=6
@@ -32,16 +33,16 @@ class FundamentalDashboardMixin:
             va="top",
             fontsize=8.3,
             fontweight="bold",
-            color="#111827",
+            color=themed("#111827"),
             zorder=7
         )
 
         def status_color(status: str) -> str:
             if status == "good":
-                return "#16a34a"
+                return themed("#16a34a")
             if status == "bad":
-                return "#dc2626"
-            return "#64748b"
+                return themed("#dc2626")
+            return themed("#64748b")
 
         def status_label(name: str, status: str, _value: Any) -> str:
             if name in {"trailing_pe", "forward_pe"}:
@@ -78,7 +79,7 @@ class FundamentalDashboardMixin:
                 ha="left",
                 va="top",
                 fontsize=7.5,
-                color="#64748b",
+                color=themed("#64748b"),
                 zorder=7
             )
             return
@@ -99,14 +100,14 @@ class FundamentalDashboardMixin:
                 va="top",
                 fontsize=7.7,
                 fontweight="bold",
-                color="#111827",
+                color=themed("#111827"),
                 zorder=7
             )
             ax.plot(
                 [card_left + 0.018, card_right - 0.018],
                 [row_y - title_rule_gap, row_y - title_rule_gap],
                 transform=ax.transAxes,
-                color="#e5e7eb",
+                color=themed("#e5e7eb"),
                 linewidth=0.6,
                 zorder=6
             )
@@ -130,7 +131,7 @@ class FundamentalDashboardMixin:
                     ha="left",
                     va="top",
                     fontsize=6.15,
-                    color="#374151",
+                    color=themed("#374151"),
                     zorder=7
                 )
                 ax.text(

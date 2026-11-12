@@ -3,6 +3,7 @@
 from typing import Any
 import pandas as pd
 from matplotlib.patches import Patch
+from .theme import themed
 
 class PriceChartMixin:
     @staticmethod
@@ -21,7 +22,7 @@ class PriceChartMixin:
             },
             bbox={
                 "boxstyle": "round,pad=0.25",
-                "facecolor": "white",
+                "facecolor": themed("white"),
                 "edgecolor": color,
                 "alpha": 0.85
             }
@@ -41,7 +42,7 @@ class PriceChartMixin:
                 continue
             ax.axvline(
                 x_value,
-                color="#f97316",
+                color=themed("#f97316"),
                 linewidth=0.75,
                 linestyle=":",
                 alpha=0.38,
@@ -81,7 +82,7 @@ class PriceChartMixin:
             self.plot_candlesticks(ax, data, plot_x, compressed_x)
         if shows_close_line:
             close_line_width = 0.9 if price_style == "Line + Candlesticks" else 1.6
-            ax.plot(plot_x, data["Close"], label="Close", linewidth=close_line_width, color="#2563eb", zorder=5)
+            ax.plot(plot_x, data["Close"], label="Close", linewidth=close_line_width, color=themed("#2563eb"), zorder=5)
         indicator_specs = [
             ("EMA9", "EMA 9"),
             ("EMA12", "EMA 12"),
@@ -109,8 +110,8 @@ class PriceChartMixin:
         handles, labels = ax.get_legend_handles_labels()
         if shows_candlesticks:
             handles = [
-                Patch(facecolor="#16a34a", edgecolor="#16a34a", label="Up Candle"),
-                Patch(facecolor="#dc2626", edgecolor="#dc2626", label="Down Candle")
+                Patch(facecolor=themed("#16a34a"), edgecolor=themed("#16a34a"), label="Up Candle"),
+                Patch(facecolor=themed("#dc2626"), edgecolor=themed("#dc2626"), label="Down Candle")
             ] + handles
             labels = ["Up Candle", "Down Candle"] + labels
         ax.legend(handles, labels, loc="upper left", fontsize=8, framealpha=0.88)
@@ -129,7 +130,7 @@ class PriceChartMixin:
             if event_x is None:
                 continue
             label = event["label"]
-            ax.axvline(event_x, color="#64748b", linestyle=":", linewidth=0.8, alpha=0.55, zorder=1)
+            ax.axvline(event_x, color=themed("#64748b"), linestyle=":", linewidth=0.8, alpha=0.55, zorder=1)
             ax.text(
                 event_x,
                 marker_y,
@@ -138,11 +139,11 @@ class PriceChartMixin:
                 va="center",
                 fontsize=7.5,
                 fontweight="bold",
-                color="#334155",
+                color=themed("#334155"),
                 bbox={
                     "boxstyle": "round,pad=0.18",
-                    "facecolor": "#f8fafc",
-                    "edgecolor": "#94a3b8",
+                    "facecolor": themed("#f8fafc"),
+                    "edgecolor": themed("#94a3b8"),
                     "alpha": 0.88
                 },
                 zorder=6
@@ -150,8 +151,8 @@ class PriceChartMixin:
 
     def plot_candlesticks(self, ax: Any, data: pd.DataFrame, plot_x: pd.Index, compressed_x: bool) -> None:
         bar_width = self.get_plot_bar_width(data, compressed_x) * 0.72
-        up_color = "#16a34a"
-        down_color = "#dc2626"
+        up_color = themed("#16a34a")
+        down_color = themed("#dc2626")
         rising = data["Close"] >= data["Open"]
         colors = rising.map({True: up_color, False: down_color})
         body_bottom = data[["Open", "Close"]].min(axis=1)

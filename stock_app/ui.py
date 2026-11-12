@@ -1,11 +1,13 @@
 """Tk settings and user interface controls."""
 
 import json
+import sys
 import tkinter as tk
 from tkinter import ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from .config import CUSTOM_PERIOD, INDICATOR_SETTINGS, PERIOD_OPTIONS, SETTINGS_PATH, VIEW_OPTIONS
+from .theme import DARK, DARK_TK, LIGHT, figure_background, set_theme
 
 class SettingsAndUIMixin:
     @staticmethod
@@ -30,6 +32,7 @@ class SettingsAndUIMixin:
             "interval": self.interval_var.get(),
             "price_style": self.price_style_var.get(),
             "current_view": self.current_view_var.get(),
+            "dark_mode": bool(self.dark_mode_var.get()),
             "indicators": {
                 indicator: getattr(self, indicator).get()
                 for indicator in INDICATOR_SETTINGS
@@ -100,7 +103,7 @@ class SettingsAndUIMixin:
             state="readonly"
         )
         price_style_combobox.pack(side="left", padx=5)
-        price_style_combobox.bind("<<ComboboxSelected>>", lambda _event: self.save_settings())
+        price_style_combobox.bind("<<ComboboxSelected>>", lambda _event: self.on_display_option_changed())
         ttk.Button(top_controls, text="Update", command=lambda: self.update_chart(refresh_fundamentals=True)).pack(side="left", padx=15)
         ttk.Label(top_controls, text="View:").pack(side="left", padx=(2, 0))
         view_combobox = ttk.Combobox(
@@ -112,25 +115,31 @@ class SettingsAndUIMixin:
         )
         view_combobox.pack(side="left", padx=5)
         view_combobox.bind("<<ComboboxSelected>>", lambda _event: self.on_view_changed())
-        ttk.Checkbutton(indicator_controls, text="EMA 9", variable=self.show_ema9, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="EMA 12", variable=self.show_ema12, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="EMA 20", variable=self.show_ema20, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="EMA 50", variable=self.show_ema50, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="EMA 100", variable=self.show_ema100, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="EMA 200", variable=self.show_ema200, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="SMA 20", variable=self.show_sma20, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="SMA 50", variable=self.show_sma50, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="SMA 100", variable=self.show_sma100, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="SMA 200", variable=self.show_sma200, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="Bollinger", variable=self.show_bollinger, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="RSI", variable=self.show_rsi, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="MACD", variable=self.show_macd, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="Volume", variable=self.show_volume, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="Vol SMA20", variable=self.show_volume_sma20, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="Vol EMA50", variable=self.show_volume_ema50, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="ATR 14", variable=self.show_atr, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="Earnings", variable=self.show_earnings, command=self.save_settings).pack(side="left", padx=8)
-        ttk.Checkbutton(indicator_controls, text="Debug Fundamentals", variable=self.show_debug_fundamentals, command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(top_controls, text="Dark Mode", variable=self.dark_mode_var, command=self.on_theme_changed).pack(side="right", padx=(15, 0))
+        self._comboboxes = [period_combobox, self.interval_combobox, price_style_combobox, view_combobox]
+        indicator_checkbuttons = [
+            ("EMA 9", self.show_ema9),
+            ("EMA 12", self.show_ema12),
+            ("EMA 20", self.show_ema20),
+            ("EMA 50", self.show_ema50),
+            ("EMA 100", self.show_ema100),
+            ("EMA 200", self.show_ema200),
+            ("SMA 20", self.show_sma20),
+            ("SMA 50", self.show_sma50),
+            ("SMA 100", self.show_sma100),
+            ("SMA 200", self.show_sma200),
+            ("Bollinger", self.show_bollinger),
+            ("RSI", self.show_rsi),
+            ("MACD", self.show_macd),
+            ("Volume", self.show_volume),
+            ("Vol SMA20", self.show_volume_sma20),
+            ("Vol EMA50", self.show_volume_ema50),
+            ("ATR 14", self.show_atr),
+            ("Earnings", self.show_earnings),
+            ("Debug Fundamentals", self.show_debug_fundamentals),
+        ]
+        for text, variable in indicator_checkbuttons:
+            ttk.Checkbutton(indicator_controls, text=text, variable=variable, command=self.on_display_option_changed).pack(side="left", padx=8)
         self.figure = Figure(figsize=(11, 7), dpi=100, constrained_layout=True)
         self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -139,10 +148,142 @@ class SettingsAndUIMixin:
         self.toggle_custom_date_controls()
         self.update_interval_options(persist=True)
 
+    def on_display_option_changed(self):
+        """Indicators and style only change the drawing, not the loaded data."""
+        self.save_settings()
+        self.redraw_chart()
+
     def on_view_changed(self):
         self.save_settings()
-        if self.ticker_var.get().strip():
-            self.update_chart(refresh_fundamentals=self.current_view_var.get() == "Fundamentals")
+        refresh_fundamentals = self.current_view_var.get() == "Fundamentals"
+        if self._chart_state is not None:
+            self.redraw_chart(refresh_fundamentals=refresh_fundamentals)
+        elif self.ticker_var.get().strip():
+            self.update_chart(refresh_fundamentals=refresh_fundamentals)
+
+    def on_theme_changed(self):
+        self.save_settings()
+        self.apply_theme()
+        if self._chart_state is not None:
+            self.redraw_chart()
+        else:
+            self.canvas.draw_idle()
+
+    def apply_theme(self):
+        """Apply the selected light or dark theme to the controls and the figure."""
+        dark = bool(self.dark_mode_var.get())
+        set_theme(DARK if dark else LIGHT)
+        style = ttk.Style(self.root)
+        if not hasattr(self, "_native_theme"):
+            self._native_theme = {
+                "ttk_theme": style.theme_use(),
+                "root_background": self.root.cget("background"),
+                "listbox": self._read_combobox_list_colors(),
+            }
+        if dark:
+            colors = DARK_TK
+            style.theme_use("clam")
+            style.configure(
+                ".",
+                background=colors["background"],
+                foreground=colors["foreground"],
+                fieldbackground=colors["field"],
+                bordercolor=colors["border"],
+                lightcolor=colors["background"],
+                darkcolor=colors["background"],
+                troughcolor=colors["field"],
+                insertcolor=colors["foreground"],
+                selectbackground=colors["accent"],
+                selectforeground=colors["accent_foreground"],
+            )
+            style.map(".", foreground=[("disabled", colors["disabled"])])
+            style.configure("TButton", background=colors["field"], padding=(10, 3))
+            style.map(
+                "TButton",
+                background=[("pressed", colors["pressed"]), ("active", colors["hover"])],
+                bordercolor=[("focus", colors["accent"])],
+            )
+            style.configure("TEntry", fieldbackground=colors["field"], padding=2)
+            style.map("TEntry", bordercolor=[("focus", colors["accent"])])
+            style.configure(
+                "TCombobox",
+                background=colors["field"],
+                arrowcolor=colors["foreground"],
+                padding=2,
+            )
+            style.map(
+                "TCombobox",
+                fieldbackground=[("readonly", colors["field"])],
+                foreground=[("readonly", colors["foreground"])],
+                selectbackground=[("readonly", colors["field"])],
+                selectforeground=[("readonly", colors["foreground"])],
+                background=[("active", colors["hover"])],
+                bordercolor=[("focus", colors["accent"])],
+            )
+            style.configure(
+                "TCheckbutton",
+                indicatorbackground=colors["field"],
+                indicatorforeground=colors["accent_foreground"],
+                upperbordercolor=colors["border"],
+                lowerbordercolor=colors["border"],
+            )
+            style.map(
+                "TCheckbutton",
+                background=[("active", colors["background"])],
+                indicatorbackground=[("selected", colors["accent"]), ("active", colors["hover"])],
+            )
+            root_background = colors["background"]
+            listbox_colors = {
+                "background": colors["field"],
+                "foreground": colors["foreground"],
+                "selectbackground": colors["accent"],
+                "selectforeground": colors["accent_foreground"],
+            }
+        else:
+            style.theme_use(self._native_theme["ttk_theme"])
+            root_background = self._native_theme["root_background"]
+            listbox_colors = self._native_theme["listbox"]
+        self.root.configure(background=root_background)
+        self._apply_combobox_list_colors(listbox_colors)
+        self.figure.set_facecolor(figure_background())
+        self.canvas.get_tk_widget().configure(background=figure_background(), highlightthickness=0)
+        self._apply_title_bar_theme(dark)
+
+    def _combobox_listbox(self, combobox):
+        """Return the Tk path of a combobox's drop-down listbox."""
+        popdown = self.root.tk.call("ttk::combobox::PopdownWindow", combobox)
+        return f"{popdown}.f.l"
+
+    def _read_combobox_list_colors(self):
+        options = ("background", "foreground", "selectbackground", "selectforeground")
+        try:
+            listbox = self._combobox_listbox(self._comboboxes[0])
+            return {option: str(self.root.tk.call(listbox, "cget", f"-{option}")) for option in options}
+        except (tk.TclError, IndexError):
+            return {}
+
+    def _apply_combobox_list_colors(self, colors):
+        for combobox in self._comboboxes:
+            try:
+                listbox = self._combobox_listbox(combobox)
+                for option, value in colors.items():
+                    self.root.tk.call(listbox, "configure", f"-{option}", value)
+            except tk.TclError:
+                continue
+
+    def _apply_title_bar_theme(self, dark):
+        """Ask Windows to draw the window's title bar dark or light."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            self.root.update_idletasks()
+            window_handle = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            use_dark = ctypes.c_int(1 if dark else 0)
+            # DWMWA_USE_IMMERSIVE_DARK_MODE
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(window_handle, 20, ctypes.byref(use_dark), ctypes.sizeof(use_dark))
+        except (AttributeError, OSError, tk.TclError):
+            pass
 
     def on_custom_range_changed(self):
         self.update_interval_options(persist=True)

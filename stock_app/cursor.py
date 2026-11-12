@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.dates import date2num
 from matplotlib.lines import Line2D
+from .theme import themed
 
 class ChartCursorMixin:
     @staticmethod
@@ -86,7 +87,7 @@ class ChartCursorMixin:
             return
         vline = ax.axvline(
             x_numeric[0],
-            color="#111827",
+            color=themed("#111827"),
             linewidth=0.85,
             linestyle="--",
             alpha=0.58,
@@ -96,7 +97,7 @@ class ChartCursorMixin:
         hline = Line2D(
             [0, 1],
             [np.nan, np.nan],
-            color="#111827",
+            color=themed("#111827"),
             linewidth=0.85,
             linestyle="--",
             alpha=0.46,
@@ -109,7 +110,7 @@ class ChartCursorMixin:
             [],
             [],
             s=28,
-            edgecolors="white",
+            edgecolors=themed("white"),
             linewidths=0.75,
             zorder=21,
             visible=False
@@ -120,11 +121,11 @@ class ChartCursorMixin:
             xytext=(12, 12),
             textcoords="offset points",
             fontsize=7.3,
-            color="#111827",
+            color=themed("#111827"),
             bbox={
                 "boxstyle": "round,pad=0.28",
-                "facecolor": "white",
-                "edgecolor": "#94a3b8",
+                "facecolor": themed("white"),
+                "edgecolor": themed("#94a3b8"),
                 "alpha": 0.94
             },
             zorder=22,
@@ -138,12 +139,12 @@ class ChartCursorMixin:
             ha="center",
             va="top",
             fontsize=7,
-            color="#111827",
+            color=themed("#111827"),
             clip_on=False,
             bbox={
                 "boxstyle": "round,pad=0.22",
-                "facecolor": "white",
-                "edgecolor": "#94a3b8",
+                "facecolor": themed("white"),
+                "edgecolor": themed("#94a3b8"),
                 "alpha": 0.94
             },
             zorder=22,
@@ -157,12 +158,12 @@ class ChartCursorMixin:
             ha="left",
             va="center",
             fontsize=7,
-            color="#111827",
+            color=themed("#111827"),
             clip_on=False,
             bbox={
                 "boxstyle": "round,pad=0.22",
-                "facecolor": "white",
-                "edgecolor": "#94a3b8",
+                "facecolor": themed("white"),
+                "edgecolor": themed("#94a3b8"),
                 "alpha": 0.94
             },
             zorder=22,
@@ -262,7 +263,7 @@ class ChartCursorMixin:
         if current_offsets.shape != marker_offsets.shape or not np.array_equal(current_offsets, marker_offsets):
             context["markers"].set_offsets(marker_offsets)
             context["markers"].set_facecolors([item["color"] for item, _value in values])
-            context["markers"].set_edgecolors(["white"] * len(values))
+            context["markers"].set_edgecolors([themed("white")] * len(values))
             changed = True
         x_text = self.format_cursor_timestamp(timestamp)
         tooltip_lines = [x_text]

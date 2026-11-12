@@ -36,6 +36,25 @@ def load_cached_data(cache_key, interval):
         return None
     return data.copy()
 
+def prune_expired_cache(now=None):
+    """Delete cache files that are older than every TTL and can never be served again."""
+    max_ttl = max(CACHE_TTLS.values())
+    now = host_now() if now is None else pd.Timestamp(now)
+    removed = 0
+    try:
+        cache_files = list(CACHE_DIR.glob("*.pkl"))
+    except OSError:
+        return removed
+    for cache_path in cache_files:
+        try:
+            modified_at = pd.Timestamp(cache_path.stat().st_mtime, unit="s", tz="UTC")
+            if now - to_host_naive_timestamp(modified_at) > max_ttl:
+                cache_path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
 def save_cached_data(cache_key, data):
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)

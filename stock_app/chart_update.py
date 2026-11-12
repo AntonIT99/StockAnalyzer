@@ -1,30 +1,72 @@
 """Chart refresh orchestration."""
 
 from tkinter import messagebox
+from typing import Any
 import pandas as pd
+from .theme import figure_background, themed
 
 class ChartUpdateMixin:
     def update_chart(self, refresh_fundamentals: bool = False):
+        """Load market data for the current selection and draw it."""
         try:
-            ticker = self.get_ticker()
-            data, visible_start, visible_end = self.download_data()
-            data = self.add_indicators(data)
-            # The interval sets the score's horizon, so scoring keeps the full
-            # warm-up history; only the plotted frame is cut to the period.
-            scoring_data = data
-            if visible_start is not None:
-                visible_start = self.align_timestamp_to_index(visible_start, data.index)
-                data = data.loc[data.index >= visible_start]
-            if visible_end is not None:
-                visible_end = self.align_timestamp_to_index(visible_end, data.index)
-                data = data.loc[data.index < visible_end]
-            if data.empty:
-                raise ValueError("No data remains after applying the selected display period.")
+            state = self.load_chart_state()
         except Exception as e:
             messagebox.showerror("Error", str(e))
             return
+        self._chart_state = state
+        self.render_chart(refresh_fundamentals=refresh_fundamentals)
+        self.save_settings()
+
+    def redraw_chart(self, refresh_fundamentals: bool = False):
+        """Redraw the loaded data with the current display options.
+
+        Indicators, view, style and theme only change how the loaded data is
+        shown, so they do not download prices again.
+        """
+        if self._chart_state is None:
+            return
+        self.render_chart(refresh_fundamentals=refresh_fundamentals)
+
+    def load_chart_state(self) -> dict[str, Any]:
+        ticker = self.get_ticker()
+        interval = self.interval_var.get()
+        data, visible_start, visible_end = self.download_data()
+        data = self.add_indicators(data)
+        # The interval sets the score's horizon, so scoring keeps the full
+        # warm-up history; only the plotted frame is cut to the period.
+        scoring_data = data
+        if visible_start is not None:
+            visible_start = self.align_timestamp_to_index(visible_start, data.index)
+            data = data.loc[data.index >= visible_start]
+        if visible_end is not None:
+            visible_end = self.align_timestamp_to_index(visible_end, data.index)
+            data = data.loc[data.index < visible_end]
+        if data.empty:
+            raise ValueError("No data remains after applying the selected display period.")
+        return {
+            "ticker": ticker,
+            "interval": interval,
+            "data": data,
+            "scoring_data": scoring_data,
+            "visible_start": visible_start,
+            "visible_end": visible_end,
+            "daily_signal_data": self.download_daily_signal_data(ticker, as_of=visible_end),
+            # Fetched on first use, then reused until the next load.
+            "earnings": None,
+        }
+
+    def render_chart(self, refresh_fundamentals: bool = False):
+        state = self._chart_state
+        ticker = state["ticker"]
+        interval = state["interval"]
+        data = state["data"]
+        visible_start = state["visible_start"]
+        visible_end = state["visible_end"]
         self.figure.clear()
+        self.figure.set_facecolor(figure_background())
         self._cursor_contexts = {}
+        self._cursor_active_ax = None
+        self._last_cursor_key = None
         extra_panels = (
             int(self.show_rsi.get())
             + int(self.show_macd.get())
@@ -45,27 +87,31 @@ class ChartUpdateMixin:
         )
         price_ax = self.figure.add_subplot(chart_grid[0, 0])
         view_ax = self.figure.add_subplot(chart_grid[:, 1])
-        compressed_x = self.uses_compressed_axis(self.interval_var.get())
+        compressed_x = self.uses_compressed_axis(interval)
         plot_x = self.get_plot_x(data, compressed_x)
         selected_indicators = self.get_selected_indicators()
         debug_fundamentals = self.show_debug_fundamentals.get()
-        fundamental_metrics = self.get_fundamentals(ticker, refresh=refresh_fundamentals, debug=debug_fundamentals) if show_fundamentals else {}
+        if show_fundamentals:
+            fundamental_metrics = self.get_fundamentals(ticker, refresh=refresh_fundamentals, debug=debug_fundamentals)
+        else:
+            # Other views only use fundamentals that are already loaded.
+            fundamental_metrics = self._fundamentals_cache.get(ticker, {})
         if show_fundamentals and debug_fundamentals:
             self.print_fundamentals_debug(fundamental_metrics)
-        daily_signal_data = self.download_daily_signal_data(ticker, as_of=visible_end)
         signal_summary = self.calculate_signal_summary(
-            scoring_data,
-            daily_signal_data,
+            state["scoring_data"],
+            state["daily_signal_data"],
             fundamental_metrics,
             daily_summary_as_of=visible_end,
             period_start_as_of=visible_start,
-            interval=self.interval_var.get()
+            interval=interval
         )
         spike_times = self.get_spike_times(data) if self.show_volume.get() else pd.Index([])
         earnings_events = pd.DataFrame(columns=["date", "surprise", "label"])
         if self.show_earnings.get():
-            earnings = self.get_earnings_events(ticker)
-            earnings_events = self.filter_visible_earnings(earnings, data.index)
+            if state["earnings"] is None:
+                state["earnings"] = self.get_earnings_events(ticker)
+            earnings_events = self.filter_visible_earnings(state["earnings"], data.index)
         self.plot_price_panel(
             price_ax,
             data,
@@ -79,7 +125,7 @@ class ChartUpdateMixin:
         )
         self.configure_x_axis(price_ax, data, compressed_x)
         price_cursor_series = [
-            self.make_cursor_series("Close", "Close", "#2563eb")
+            self.make_cursor_series("Close", "Close", themed("#2563eb"))
         ]
         price_cursor_specs = [
             ("EMA9", "EMA 9", "#f97316"),
@@ -94,14 +140,14 @@ class ChartUpdateMixin:
             ("SMA200", "SMA 200", "#475569")
         ]
         price_cursor_series.extend(
-            self.make_cursor_series(label, column, color)
+            self.make_cursor_series(label, column, themed(color))
             for column, label, color in price_cursor_specs
             if selected_indicators.get(column)
         )
         if selected_indicators.get("BOLLINGER"):
             price_cursor_series.extend([
-                self.make_cursor_series("Bollinger Upper", "BB_UPPER", "#64748b"),
-                self.make_cursor_series("Bollinger Lower", "BB_LOWER", "#64748b")
+                self.make_cursor_series("Bollinger Upper", "BB_UPPER", themed("#64748b")),
+                self.make_cursor_series("Bollinger Lower", "BB_LOWER", themed("#64748b"))
             ])
         self.register_cursor_axis(price_ax, data, plot_x, price_cursor_series)
         if current_view == "Signal Summary":
@@ -130,7 +176,7 @@ class ChartUpdateMixin:
                 rsi_ax,
                 data,
                 plot_x,
-                [self.make_cursor_series("RSI 14", "RSI", "#2563eb")]
+                [self.make_cursor_series("RSI 14", "RSI", themed("#2563eb"))]
             )
             row += 1
         if self.show_macd.get():
@@ -147,8 +193,8 @@ class ChartUpdateMixin:
                 data,
                 plot_x,
                 [
-                    self.make_cursor_series("MACD", "MACD", "#2563eb"),
-                    self.make_cursor_series("Signal", "MACD_SIGNAL", "#f97316")
+                    self.make_cursor_series("MACD", "MACD", themed("#2563eb")),
+                    self.make_cursor_series("Signal", "MACD_SIGNAL", themed("#f97316"))
                 ]
             )
             row += 1
@@ -166,18 +212,18 @@ class ChartUpdateMixin:
             )
             self.configure_x_axis(volume_ax, data, compressed_x)
             volume_cursor_series = [
-                self.make_cursor_series("Volume", "Volume", "#64748b")
+                self.make_cursor_series("Volume", "Volume", themed("#64748b"))
             ]
             if self.show_volume_sma20.get():
-                volume_cursor_series.append(self.make_cursor_series("Vol SMA 20", "VOLUME_SMA20", "#2563eb"))
+                volume_cursor_series.append(self.make_cursor_series("Vol SMA 20", "VOLUME_SMA20", themed("#2563eb")))
             if self.show_volume_ema50.get():
-                volume_cursor_series.append(self.make_cursor_series("Vol EMA 50", "VOLUME_EMA50", "#0891b2"))
+                volume_cursor_series.append(self.make_cursor_series("Vol EMA 50", "VOLUME_EMA50", themed("#0891b2")))
             self.register_cursor_axis(volume_ax, data, plot_x, volume_cursor_series)
             self.register_cursor_axis(
                 rvol_ax,
                 data,
                 plot_x,
-                [self.make_cursor_series("RVOL", "RVOL", "#f97316")]
+                [self.make_cursor_series("RVOL", "RVOL", themed("#f97316"))]
             )
             row += 1
         if self.show_atr.get():
@@ -191,7 +237,6 @@ class ChartUpdateMixin:
                 atr_ax,
                 data,
                 plot_x,
-                [self.make_cursor_series("ATR 14", "ATR14", "#2563eb")]
+                [self.make_cursor_series("ATR 14", "ATR14", themed("#2563eb"))]
             )
         self.canvas.draw()
-        self.save_settings()

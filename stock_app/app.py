@@ -3,7 +3,7 @@
 import tkinter as tk
 from typing import Any
 import pandas as pd
-from .cache import build_cache_key, get_cache_path, load_cached_data, save_cached_data
+from .cache import build_cache_key, get_cache_path, load_cached_data, prune_expired_cache, save_cached_data
 from .config import PERIOD_OPTIONS, VIEW_OPTIONS
 from .ohlcv import drop_incomplete_price_rows, flatten_yfinance_columns, get_bar_width, resample_ohlcv
 from .time_utils import get_host_timezone, host_now, host_today, normalize_index_to_host_timezone, to_host_naive_timestamp
@@ -55,6 +55,7 @@ class StockApp(
 
     def __init__(self, root, initial_ticker=""):
         settings = self.load_settings()
+        prune_expired_cache()
         self.root = root
         self.root.title("Stock Technical Chart")
         self.root.geometry("1600x900")
@@ -110,6 +111,8 @@ class StockApp(
         self.show_atr = tk.BooleanVar(value=bool(indicator_settings.get("show_atr", False)))
         self.show_earnings = tk.BooleanVar(value=bool(indicator_settings.get("show_earnings", False)))
         self.show_debug_fundamentals = tk.BooleanVar(value=bool(indicator_settings.get("show_debug_fundamentals", False)))
+        self.dark_mode_var = tk.BooleanVar(value=bool(settings.get("dark_mode", False)))
+        self._chart_state: dict[str, Any] | None = None
         self._fundamentals_cache: dict[str, dict[str, Any]] = {}
         self._cursor_contexts: dict[Any, dict[str, Any]] = {}
         self._cursor_active_ax: Any | None = None
@@ -117,6 +120,7 @@ class StockApp(
         self._last_hover_time = 0.0
         self._hover_min_interval = 1 / 40
         self._build_ui()
+        self.apply_theme()
         self.canvas.mpl_connect("motion_notify_event", self.on_chart_hover)
         self.canvas.mpl_connect("figure_leave_event", self.hide_chart_cursor)
         if ticker:

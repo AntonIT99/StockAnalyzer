@@ -4,6 +4,7 @@ from typing import Any
 import pandas as pd
 from matplotlib.patches import FancyBboxPatch
 from .config import CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, MOMENTUM_SCORE_MAX, SETUP_QUALITY_SCORE_MAX, TECHNICAL_SCORE_WEIGHTS, TREND_STRUCTURE_SCORE_MAX
+from .theme import themed
 
 class SignalSummaryChartMixin:
     def add_signal_summary_box(
@@ -28,47 +29,47 @@ class SignalSummaryChartMixin:
         def status_color(value: str) -> str:
             normalized = str(value).lower()
             if normalized in {"above", "above signal", "above 0", "rising", "bullish", "strong bullish", "strongly bullish", "bullish confirmed", "strong bullish confirmed", "confirmed uptrend", "golden cross", "golden state", "cheap", "strong", "confirmed", "excellent", "good", "attractive", "ok", "healthy", "improving"}:
-                return "#16a34a"
+                return themed("#16a34a")
             if normalized in {"partial", "moderate", "fair", "slightly bearish", "neutral / mixed", "mixed", "neutral / transition", "mixed / transition", "transition", "early recovery", "weak recovery", "recovery attempt", "reversal attempt", "improving, not confirmed", "bearish, improving", "mixed bearish", "pullback", "bullish pullback", "bearish pullback", "bullish, losing momentum", "bullish but weakening", "stable", "cross neutral"}:
-                return "#f97316"
+                return themed("#f97316")
             if normalized in {"below", "below signal", "below 0", "falling", "bearish", "strong bearish", "strongly bearish", "confirmed downtrend", "weak / bearish", "death cross", "death state", "deteriorating", "expensive", "weak", "none", "poor", "risky", "extended", "outside range"}:
-                return "#dc2626"
+                return themed("#dc2626")
             if normalized in {"mixed", "neutral", "n/a", "unknown", "watchlist"}:
-                return "#64748b"
-            return "#0ea5e9"
+                return themed("#64748b")
+            return themed("#0ea5e9")
 
         def distance_color(value: float | None, positive_is_good: bool = True) -> str:
             if value is None or pd.isna(value):
-                return "#64748b"
+                return themed("#64748b")
             if abs(value) < 0.005:
-                return "#64748b"
+                return themed("#64748b")
             is_good = value > 0 if positive_is_good else value < 0
-            return "#16a34a" if is_good else "#dc2626"
+            return themed("#16a34a") if is_good else themed("#dc2626")
 
         def from_52w_high_color(value: float | None) -> str:
             if value is None or pd.isna(value):
-                return "#64748b"
+                return themed("#64748b")
             if value > -0.10:
-                return "#16a34a"
+                return themed("#16a34a")
             if value >= -0.25:
-                return "#f97316"
-            return "#dc2626"
+                return themed("#f97316")
+            return themed("#dc2626")
 
         def from_52w_low_color(value: float | None) -> str:
             if value is None or pd.isna(value):
-                return "#64748b"
+                return themed("#64748b")
             if value > 0.30:
-                return "#16a34a"
+                return themed("#16a34a")
             if value >= 0.10:
-                return "#f97316"
-            return "#f97316"
+                return themed("#f97316")
+            return themed("#f97316")
 
         def rvol_color(value: float | None) -> str:
             if value is None or pd.isna(value):
-                return "#64748b"
+                return themed("#64748b")
             if value > 1.1:
-                return "#16a34a"
-            return "#64748b"
+                return themed("#16a34a")
+            return themed("#64748b")
 
         def format_signed_percent(value: float | None) -> str:
             return self.format_summary_percent(value)
@@ -92,16 +93,16 @@ class SignalSummaryChartMixin:
 
         def atr_extension_color() -> str:
             return {
-                "Normal": "#16a34a",
-                "Moderately Extended": "#f97316",
-                "Extended": "#ea580c",
-                "Extremely Extended": "#dc2626",
-            }.get(summary.get("atr_extension_state"), "#64748b")
+                "Normal": themed("#16a34a"),
+                "Moderately Extended": themed("#f97316"),
+                "Extended": themed("#ea580c"),
+                "Extremely Extended": themed("#dc2626"),
+            }.get(summary.get("atr_extension_state"), themed("#64748b"))
 
         def risk_status(value: bool | None) -> tuple[str, str]:
             if value is None:
-                return "—", "#64748b"
-            return ("Yes", "#dc2626") if value else ("No", "#16a34a")
+                return "—", themed("#64748b")
+            return ("Yes", themed("#dc2626")) if value else ("No", themed("#16a34a"))
         trend_score = summary.get("daily_trend_score")
         trend_label = summary.get("daily_trend", type(self).classify_trend_score(trend_score))
         confirmation_score = summary.get("confirmation_score")
@@ -120,20 +121,20 @@ class SignalSummaryChartMixin:
         trend_phase = summary.get("trend_phase", "N/A")
         trend_direction = summary.get("trend_direction", "Stable")
         verdict_colors = {
-            "Strongly Bullish": "#16a34a",
-            "Bullish": "#65a30d",
-            "Neutral / Mixed": "#64748b",
-            "Bearish": "#f97316",
-            "Strongly Bearish": "#dc2626",
-            "Bullish but Extended": "#f97316",
-            "Bullish Trend — High Pullback Risk": "#dc2626",
-            "Bullish with Elevated Risk": "#f97316",
+            "Strongly Bullish": themed("#16a34a"),
+            "Bullish": themed("#65a30d"),
+            "Neutral / Mixed": themed("#64748b"),
+            "Bearish": themed("#f97316"),
+            "Strongly Bearish": themed("#dc2626"),
+            "Bullish but Extended": themed("#f97316"),
+            "Bullish Trend — High Pullback Risk": themed("#dc2626"),
+            "Bullish with Elevated Risk": themed("#f97316"),
         }
 
         def score_color(passed: bool | None) -> str:
             if passed is None:
-                return "#64748b"
-            return "#16a34a" if passed else "#dc2626"
+                return themed("#64748b")
+            return themed("#16a34a") if passed else themed("#dc2626")
 
         def status_symbol(passed: bool | None) -> str:
             if passed is None:
@@ -202,7 +203,7 @@ class SignalSummaryChartMixin:
         def score_header(title: str, key: str, max_score: int, confirmation: bool = False) -> dict[str, str]:
             value = summary.get(key)
             if value is None:
-                return {"title": title, "score": "N/A", "color": "#64748b"}
+                return {"title": title, "score": "N/A", "color": themed("#64748b")}
             label = section_score_label(title, int(value), max_score)
             color = status_color(label)
             return {"title": title, "score": f"{int(value)}/{max_score} {label}", "color": color}
@@ -220,12 +221,12 @@ class SignalSummaryChartMixin:
         def trend_layer_hierarchy_color(label_key: str) -> str:
             normalized = str(summary.get(label_key, "N/A")).lower()
             if normalized in {"strongly bullish", "bullish"}:
-                return "#16a34a"
+                return themed("#16a34a")
             if normalized in {"mixed", "neutral", "neutral / mixed", "slightly bearish"}:
-                return "#f97316"
+                return themed("#f97316")
             if normalized in {"bearish", "strongly bearish"}:
-                return "#dc2626"
-            return "#64748b"
+                return themed("#dc2626")
+            return themed("#64748b")
 
         def hierarchy_text(value: str) -> str:
             text = str(value or "Not enough data")
@@ -242,11 +243,11 @@ class SignalSummaryChartMixin:
         def trend_state_color(value: str) -> str:
             text = str(value)
             if "Death Cross" in text or "\u2198" in text:
-                return "#dc2626"
+                return themed("#dc2626")
             if "Golden Cross" in text or "\u2197" in text:
-                return "#16a34a"
+                return themed("#16a34a")
             if "N/A" in text or "Not enough data" in text or "Neutral" in text or "\u2192" in text:
-                return "#64748b"
+                return themed("#64748b")
             return status_color(text)
 
         def layer_title(label: str, horizon_key: str) -> str:
@@ -283,7 +284,7 @@ class SignalSummaryChartMixin:
         macd_above_zero = status_pass("daily_macd_zero", "Above 0")
         rvol_confirmed = summary.get("volume_confirmation")
         volume_status = "N/A" if rvol_confirmed is None else "Confirmed" if rvol_confirmed else "Limited participation"
-        volume_status_color = "#16a34a" if rvol_confirmed else "#64748b"
+        volume_status_color = themed("#16a34a") if rvol_confirmed else themed("#64748b")
         live_rvol = summary.get("live_rvol20")
         volume_context_label = "Live RVOL (provisional)" if summary.get("volume_provisional") else "Volume bar"
         volume_context = (
@@ -507,7 +508,7 @@ class SignalSummaryChartMixin:
         def metric_row(
             label: str,
             value: str,
-            color: str = "#111827",
+            color: str = themed("#111827"),
             bold_value: bool = False,
             indent: int = 0,
             height: float = 1.0,
@@ -583,7 +584,7 @@ class SignalSummaryChartMixin:
             (
                 score_header("Setup Quality", "daily_trend_score_quality", setup_max),
                 [
-                    metric_row("EMA20 Distance (context)", format_signed_percent(summary.get("daily_ema20_extension")), "#64748b"),
+                    metric_row("EMA20 Distance (context)", format_signed_percent(summary.get("daily_ema20_extension")), themed("#64748b")),
                     metric_row("SMA200 Ext <=20%", format_extension("daily_sma200_extension_state", "daily_sma200_extension"), status_color(summary.get("daily_sma200_extension_state", "N/A"))),
                     metric_row("ATR Extension", format_atr_extension(), atr_extension_color()),
                     metric_row("Bollinger Failure", *risk_status(summary.get("bollinger_breakout_failure")))
@@ -596,7 +597,7 @@ class SignalSummaryChartMixin:
                     metric_row("RVOL20 (completed)", rvol20_text, rvol_color(rvol20)),
                     metric_row("Low-Volume New High", *risk_status(summary.get("low_volume_new_high"))),
                     metric_row("Rejection Candle", *risk_status(summary.get("spike_rejection_candle"))),
-                    metric_row(volume_context_label, volume_context, "#64748b"),
+                    metric_row(volume_context_label, volume_context, themed("#64748b")),
                     metric_row("ATR% Range", f"{status_symbol(status_pass('daily_atr_pct_state', 'Healthy'))} {summary.get('daily_atr_pct_state', 'N/A')}", status_color(summary.get("daily_atr_pct_state", "N/A")))
                 ]
             )
@@ -635,12 +636,12 @@ class SignalSummaryChartMixin:
             "subgroup_weight": "bold",
             "metric_weight": "normal",
             "header_metric_value_weight": "bold",
-            "label_color": "#374151",
-            "title_color": "#111827",
-            "subgroup_color": "#4b5563",
-            "muted_color": "#64748b",
-            "divider_color": "#e5e7eb",
-            "card_fill": "#f8fafc"
+            "label_color": themed("#374151"),
+            "title_color": themed("#111827"),
+            "subgroup_color": themed("#4b5563"),
+            "muted_color": themed("#64748b"),
+            "divider_color": themed("#e5e7eb"),
+            "card_fill": themed("#f8fafc")
         }
         style_map = {
             "title": {"fontsize": layout["title_font_size"], "fontweight": layout["title_weight"], "color": layout["title_color"]},
@@ -784,8 +785,8 @@ class SignalSummaryChartMixin:
             card_height,
             boxstyle="round,pad=0.012",
             transform=ax.transAxes,
-            facecolor="white",
-            edgecolor="#d1d5db",
+            facecolor=themed("white"),
+            edgecolor=themed("#d1d5db"),
             linewidth=0.9,
             alpha=0.94,
             zorder=6

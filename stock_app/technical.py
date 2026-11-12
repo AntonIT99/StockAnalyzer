@@ -3,6 +3,7 @@
 from typing import Any
 import pandas as pd
 from .config import ATR_PCT_HEALTHY_MAX, ATR_PCT_HEALTHY_MIN, BULLISH_STRUCTURE_SCORE_MAX, CONFIRMATION_SCORE_MAX, EXTENDED_BULLISH_SCORE_MAX, MOMENTUM_SCORE_MAX, PullbackRiskConfig, SETUP_QUALITY_SCORE_MAX, TECHNICAL_ASSESSMENT_WEAK_PERCENTAGES, TECHNICAL_SCORE_WEIGHTS, TREND_STRUCTURE_SCORE_MAX
+from .theme import themed
 
 class TechnicalAnalysisMixin:
     @staticmethod
@@ -2102,7 +2103,7 @@ class TechnicalAnalysisMixin:
             rows.append({
                 "label": f"{arrow} {display_label}",
                 "value": f"{displayed_baseline}/{int(max_score)} → {displayed_current}/{int(max_score)}",
-                "color": "#16a34a" if improved else "#dc2626"
+                "color": themed("#16a34a") if improved else themed("#dc2626")
             })
         return rows
 
